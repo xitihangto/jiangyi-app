@@ -38,19 +38,14 @@ extension View {
         }
     }
     /// 退出确认框的按钮样式：26+ 走系统玻璃按钮，旧系统走原来的 bordered。
-    @ViewBuilder func dialogGlassButtonStyle(prominent: Bool) -> some View {
+    /// 两个按钮用同一个样式，系统 hover 才完全一样；不要再在上面叠自定义
+    /// onHover + 放大 + 提亮 + 手型光标，那是取消按钮闪黑闪白、边缘手/箭头
+    /// 来回跳的根源（玻璃材质重算 + 双重 hover 处理）。
+    @ViewBuilder func dialogGlassButtonStyle() -> some View {
         if #available(macOS 26.0, *) {
-            if prominent {
-                self.buttonStyle(.glassProminent)
-            } else {
-                self.buttonStyle(.glass)
-            }
+            self.buttonStyle(.glass)
         } else {
-            if prominent {
-                self.buttonStyle(.borderedProminent)
-            } else {
-                self.buttonStyle(.bordered)
-            }
+            self.buttonStyle(.bordered)
         }
     }
 }
@@ -146,6 +141,9 @@ struct WindowCloseAccessor: NSViewRepresentable {
         DispatchQueue.main.async {
             if let window = view.window {
                 window.delegate = ExitConfirmWindowDelegate.shared
+                // 标题栏只留红绿灯，不显示“讲义生成”几个字（和界面内大标题重复）。
+                // 只隐藏标题栏文字，不改窗口本身的标题，Dock 菜单里的窗口名还在。
+                window.titleVisibility = .hidden
             }
         }
         return view
@@ -154,6 +152,7 @@ struct WindowCloseAccessor: NSViewRepresentable {
         DispatchQueue.main.async {
             if let window = nsView.window {
                 window.delegate = ExitConfirmWindowDelegate.shared
+                window.titleVisibility = .hidden
             }
         }
     }
@@ -294,27 +293,28 @@ struct ContentView: View {
                 Text("退出后 App 将完全关闭。")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-                HStack(spacing: 14) {
+                HStack(spacing: 13) {
                     Button {
                         NSApplication.shared.terminate(nil)
                     } label: {
                         Text("退出")
-                            .font(.system(size: 15, weight: .semibold))
-                            .padding(.horizontal, 22)
-                            .padding(.vertical, 7)
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 6)
                     }
-                    .dialogGlassButtonStyle(prominent: true)
+                    .dialogGlassButtonStyle()
                     .tint(Color.brandRed)
+                    .foregroundStyle(.white)
                     .keyboardShortcut(.defaultAction)
                     Button {
                         showExitConfirm = false
                     } label: {
                         Text("取消")
-                            .font(.system(size: 15, weight: .medium))
-                            .padding(.horizontal, 22)
-                            .padding(.vertical, 7)
+                            .font(.system(size: 13.5, weight: .medium))
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 6)
                     }
-                    .dialogGlassButtonStyle(prominent: false)
+                    .dialogGlassButtonStyle()
                     .keyboardShortcut(.cancelAction)
                 }
                 .padding(.top, 4)
@@ -350,49 +350,34 @@ struct ContentView: View {
     // MARK: 登录
 
     private var loginLine: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
-                if state.loginSettled {
-                    Circle()
-                        .fill(state.login.dotColor)
-                        .frame(width: 8, height: 8)
-                    Text(state.login.label)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                } else {
-                    // 还没问出来之前只说"在检测"，不吓唬用户说没登录
-                    ProgressView()
-                        .controlSize(.mini)
-                        .frame(width: 12, height: 12)
-                    Text("正在检测登录状态…")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 6)
-
-                if state.loginCountdown > 0 {
-                    Text("\(state.loginCountdown) 秒后自动收起")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.brandBlue)
-                } else if state.loginSettled && !state.login.isLoggedIn {
-                    Button { state.openDeepSeek() } label: {
-                        Text("登录 DeepSeek")
-                            .font(.system(size: 12, weight: .semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 6)
-                            .trialGlassCapsule(fallbackFill: Color.brandBlue.opacity(0.13))
-                            .foregroundStyle(Color.brandBlue)
-                    }
-                    .buttonStyle(.plain)
-                    .handCursor()
-                    .help("只在登录时会弹出窗口，登录成功后自动收起")
-                }
+        // 两行合并为一行：启动时只有登录状态，检测出已登录后第二行再出现，
+        // 原来会让窗口高度突然变大、看着突兀。现在整行高度固定为 30，
+        // 第二行内容只在同一行里横向出现，窗口高度从启动到登录完成都不变。
+        HStack(spacing: 8) {
+            if state.loginSettled {
+                Circle()
+                    .fill(state.login.dotColor)
+                    .frame(width: 8, height: 8)
+                Text(state.login.label)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else {
+                // 还没问出来之前只说"在检测"，不吓唬用户说没登录
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 12, height: 12)
+                Text("正在检测登录状态…")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
             if let mode = state.modeStatusText {
+                Text("·")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
                 HStack(spacing: 5) {
                     Image(systemName: state.modesChecking ? "arrow.triangle.2.circlepath" :
                           (state.modesReady ? "checkmark.circle.fill" : "exclamationmark.circle"))
@@ -401,6 +386,8 @@ struct ContentView: View {
                     Text(mode)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     if !state.modesReady && !state.modesChecking {
                         Button("重新检查") { state.retryDeepSeekModes() }
                             .font(.system(size: 11, weight: .medium))
@@ -410,8 +397,30 @@ struct ContentView: View {
                     }
                 }
             }
+
+            Spacer(minLength: 6)
+
+            if state.loginCountdown > 0 {
+                Text("\(state.loginCountdown) 秒后自动收起")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.brandBlue)
+                    .lineLimit(1)
+            } else if state.loginSettled && !state.login.isLoggedIn {
+                Button { state.openDeepSeek() } label: {
+                    Text("登录 DeepSeek")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .trialGlassCapsule(fallbackFill: Color.brandBlue.opacity(0.13))
+                        .foregroundStyle(Color.brandBlue)
+                }
+                .buttonStyle(.plain)
+                .handCursor()
+                .help("只在登录时会弹出窗口，登录成功后自动收起")
+            }
         }
         .padding(.horizontal, 4)
+        .frame(height: 30)
     }
 
     // MARK: 主按钮
