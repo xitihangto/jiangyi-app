@@ -67,6 +67,46 @@ struct LectureApp: App {
     }
 }
 
+// MARK: - 左上角关闭按钮 = 退出确认
+
+/// 系统红灯（左上角关闭按钮）默认只关窗口，App 本身还留在后台。
+/// 这里把它改成“退出 App”：窗口代理先拦住关闭（返回 false），
+/// 发通知让 ContentView 在窗口绝对中心弹确认框；用户点“退出”才真正 terminate，
+/// 点“取消”窗口原样保留。Cmd+Q 走系统退出，不经过这条路，不受影响。
+/// 注意：代理只实现 windowShouldClose，其它窗口行为不受影响。
+extension Notification.Name {
+    static let lectureAppConfirmExit = Notification.Name("LectureAppConfirmExit")
+}
+
+final class ExitConfirmWindowDelegate: NSObject, NSWindowDelegate {
+    static let shared = ExitConfirmWindowDelegate()
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        NotificationCenter.default.post(name: .lectureAppConfirmExit, object: nil)
+        return false
+    }
+}
+
+/// 把窗口代理挂到主窗口上：NSViewRepresentable 的 view 一拿到 window 就设代理，
+/// update 时再设一次，防止 SwiftUI 后续重建时代理被换掉。
+struct WindowCloseAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window {
+                window.delegate = ExitConfirmWindowDelegate.shared
+            }
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if let window = nsView.window {
+                window.delegate = ExitConfirmWindowDelegate.shared
+            }
+        }
+    }
+}
+
 // MARK: - 手型光标
 
 /// 可按的元素统一换成"手"光标。
@@ -121,6 +161,7 @@ struct RotatingGradientBorder: View {
 
 struct ContentView: View {
     @EnvironmentObject var state: AppState
+    @State private var showExitConfirm = false
 
     var body: some View {
         ZStack {
@@ -146,8 +187,16 @@ struct ContentView: View {
             }
         }
         .frame(width: 620, height: 720)
+        .background(WindowCloseAccessor())
         .onAppear {
             state.startPolling()
+            // 兜底：界面出现时也直接给已存在的窗口挂上关闭代理，
+            // 防止 background 的 NSView 在窗口挂接时序上没赶上。
+            DispatchQueue.main.async {
+                for window in NSApplication.shared.windows {
+                    window.delegate = ExitConfirmWindowDelegate.shared
+                }
+            }
             // 开发用：--uidemo / --uidemo2 只改界面状态，方便截图检查视觉
             if CommandLine.arguments.contains("--uidemo") {
                 state.applyUIDemo(step: 1)
@@ -170,6 +219,52 @@ struct ContentView: View {
         .sheet(isPresented: $state.showOutputPanel) {
             OutputSheet().environmentObject(state)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .lectureAppConfirmExit)) { _ in
+            showExitConfirm = true
+        }
+        .overlay {
+            if showExitConfirm {
+                exitConfirmOverlay
+            }
+        }
+    }
+
+    // MARK: 退出确认弹窗（窗口绝对中心）
+
+    /// overlay 铺满整个 620×720 窗口，卡片在 ZStack 正中，
+    /// 不是贴在某个角落，也不是系统 sheet。
+    private var exitConfirmOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+            VStack(spacing: 14) {
+                Text("确认退出吗？")
+                    .font(.system(size: 16, weight: .semibold))
+                Text("退出后 App 将完全关闭。")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    Button("取消") {
+                        showExitConfirm = false
+                    }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
+                    Button("退出") {
+                        NSApplication.shared.terminate(nil)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.brandRed)
+                    .keyboardShortcut(.defaultAction)
+                }
+                .padding(.top, 4)
+            }
+            .padding(24)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .shadow(color: .black.opacity(0.18), radius: 16, y: 6)
+            )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: 标题
@@ -404,9 +499,9 @@ struct UploadCard: View {
                         .foregroundStyle(.white)
                         .frame(width: 22, height: 22)
                         .background(Circle().fill(Color.brandPink))
-                        .shadow(color: Color.brandPink.opacity(isCloseHover ? 0.6 : 0.45),
-                                radius: isCloseHover ? 9 : 6,
-                                y: isCloseHover ? 3 : 2)
+                        .shadow(color: Color.brandPink.opacity(isCloseHover ? 0.4 : 0.3),
+                                radius: isCloseHover ? 4 : 3,
+                                y: isCloseHover ? 2 : 1)
                         .offset(x: isCloseHover ? 1 : 0, y: isCloseHover ? -1 : 0)
                         .animation(.easeOut(duration: 0.12), value: isCloseHover)
                 }

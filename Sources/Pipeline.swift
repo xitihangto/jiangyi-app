@@ -290,7 +290,13 @@ extension AppState {
             // 不再有“正在写 / 正在读 / 快写完了”几套文案，也不再另起多套节奏。
             // 字数涨没涨，一看这句里的数字就知道；分段提示在下面点“继续”时会立刻报一次，
             // 下一轮播报（5 秒后）再接上这句，不会立刻盖掉分段提示。
-            say("AI 正在思考…", detail: "代码目前 \(codeLen) 字，正在等它继续输出", running: true)
+            // 还没出现真的代码框、字数还是 0 时，别报“代码目前 0 字”，看着着急。
+            // 先报思考中，直到代码框出现且字数大于 0，才恢复原来的代码字数播报。
+            if blocks > 0 && codeLen > 0 {
+                say("AI 正在思考…", detail: "代码目前 \(codeLen) 字，正在等它继续输出", running: true)
+            } else {
+                say("DeepSeek 正在认真思考", detail: "代码即将呈现", running: true)
+            }
             if hasContinue {
                 announce("continue-\(clicksTried)",
                          clicksTried == 0
