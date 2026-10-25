@@ -1,0 +1,6 @@
+.DS_Store
+dist/
+*.app
+tmp/
+.extract-cache/
+*.log
