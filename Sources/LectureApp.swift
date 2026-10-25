@@ -3,6 +3,58 @@ import AppKit
 
 // MARK: - 品牌色
 
+/// 试用版 Liquid Glass（本地试用，不升版、不推 GitHub，用户 2026-10-26 特别交代先本地跑看效果）。
+/// 只给上传卡用：macOS 26+ 走玻璃，旧系统自动回退到现有的实色卡片 + 阴影。
+extension View {
+    @ViewBuilder func trialGlassCard(cornerRadius: CGFloat, shadowOpacity: Double, shadowRadius: CGFloat) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            self.background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .shadow(color: .black.opacity(shadowOpacity), radius: shadowRadius, y: 4)
+            )
+        }
+    }
+    /// 带 tint 的玻璃按钮：26+ 走玻璃 + tint，旧系统走原来的填充 + 阴影。
+    @ViewBuilder func trialGlassTinted(cornerRadius: CGFloat, tint: Color, fallback: AnyShapeStyle, shadowColor: Color, shadowRadius: CGFloat, shadowY: CGFloat) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular.tint(tint), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            self.background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(fallback)
+                    .shadow(color: shadowColor, radius: shadowRadius, y: shadowY)
+            )
+        }
+    }
+    /// 玻璃小药丸：26+ 走玻璃胶囊，旧系统走原来的胶囊填充。
+    @ViewBuilder func trialGlassCapsule(fallbackFill: Color) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular, in: Capsule())
+        } else {
+            self.background(Capsule().fill(fallbackFill))
+        }
+    }
+    /// 退出确认框的按钮样式：26+ 走系统玻璃按钮，旧系统走原来的 bordered。
+    @ViewBuilder func dialogGlassButtonStyle(prominent: Bool) -> some View {
+        if #available(macOS 26.0, *) {
+            if prominent {
+                self.buttonStyle(.glassProminent)
+            } else {
+                self.buttonStyle(.glass)
+            }
+        } else {
+            if prominent {
+                self.buttonStyle(.borderedProminent)
+            } else {
+                self.buttonStyle(.bordered)
+            }
+        }
+    }
+}
+
 extension Color {
     static let brandBlue = Color(red: 0.16, green: 0.45, blue: 0.94)
     static let brandPurple = Color(red: 0.55, green: 0.32, blue: 0.93)
@@ -242,27 +294,33 @@ struct ContentView: View {
                 Text("退出后 App 将完全关闭。")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-                HStack(spacing: 12) {
-                    Button("取消") {
-                        showExitConfirm = false
-                    }
-                    .buttonStyle(.bordered)
-                    .keyboardShortcut(.cancelAction)
-                    Button("退出") {
+                HStack(spacing: 14) {
+                    Button {
                         NSApplication.shared.terminate(nil)
+                    } label: {
+                        Text("退出")
+                            .font(.system(size: 15, weight: .semibold))
+                            .padding(.horizontal, 22)
+                            .padding(.vertical, 7)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .dialogGlassButtonStyle(prominent: true)
                     .tint(Color.brandRed)
                     .keyboardShortcut(.defaultAction)
+                    Button {
+                        showExitConfirm = false
+                    } label: {
+                        Text("取消")
+                            .font(.system(size: 15, weight: .medium))
+                            .padding(.horizontal, 22)
+                            .padding(.vertical, 7)
+                    }
+                    .dialogGlassButtonStyle(prominent: false)
+                    .keyboardShortcut(.cancelAction)
                 }
                 .padding(.top, 4)
             }
             .padding(24)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .shadow(color: .black.opacity(0.18), radius: 16, y: 6)
-            )
+            .trialGlassCard(cornerRadius: 16, shadowOpacity: 0.18, shadowRadius: 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -325,7 +383,7 @@ struct ContentView: View {
                             .font(.system(size: 12, weight: .semibold))
                             .padding(.horizontal, 14)
                             .padding(.vertical, 6)
-                            .background(Capsule().fill(Color.brandBlue.opacity(0.13)))
+                            .trialGlassCapsule(fallbackFill: Color.brandBlue.opacity(0.13))
                             .foregroundStyle(Color.brandBlue)
                     }
                     .buttonStyle(.plain)
@@ -374,11 +432,10 @@ struct ContentView: View {
                              : Color(nsColor: .secondaryLabelColor))
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(buttonStyle)
-                    .shadow(color: shadowColor, radius: 16, y: 7)
-            )
+            .trialGlassTinted(cornerRadius: 14,
+                              tint: state.isRunning ? Color.brandRed : (state.canGenerate ? Color.brandBlue : Color.secondary),
+                              fallback: buttonStyle,
+                              shadowColor: shadowColor, shadowRadius: 16, shadowY: 7)
         }
         .buttonStyle(.plain)
         .handCursor()
@@ -441,6 +498,8 @@ struct ContentView: View {
 
 struct Backdrop: View {
     var body: some View {
+        // 用户 2026-10-26 反馈：主背景不要玻璃，背景复杂就看不清。
+        // 主背景恢复原来的实色 + 蓝紫晕，玻璃只留给按钮和圆角框。
         ZStack {
             Color(nsColor: .windowBackgroundColor)
             RadialGradient(colors: [Color.brandBlue.opacity(0.16), .clear],
@@ -551,12 +610,7 @@ struct UploadCard: View {
         .padding(.vertical, 19)
         .padding(.horizontal, 16)
         .contentShape(Rectangle())
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .shadow(color: .black.opacity(active ? 0.09 : 0.03),
-                        radius: active ? 14 : 6, y: 4)
-        )
+        .trialGlassCard(cornerRadius: 16, shadowOpacity: active ? 0.09 : 0.03, shadowRadius: active ? 14 : 6)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.secondary.opacity(active ? 0 : 0.30), lineWidth: 1.2)
@@ -637,11 +691,7 @@ struct ProgressCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .shadow(color: .black.opacity(0.05), radius: 10, y: 4)
-        )
+        .trialGlassCard(cornerRadius: 16, shadowOpacity: 0.05, shadowRadius: 10)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.secondary.opacity(0.14), lineWidth: 1)
@@ -741,7 +791,7 @@ struct WordCard: View {
                         .font(.system(size: 10, weight: .semibold))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
-                        .background(Capsule().fill(Color.green.opacity(0.16)))
+                        .trialGlassCapsule(fallbackFill: Color.green.opacity(0.16))
                         .foregroundStyle(.green)
                 }
             }
@@ -768,11 +818,11 @@ struct WordCard: View {
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(LinearGradient(colors: [.brandPink, .brandPurple],
-                                                     startPoint: .leading, endPoint: .trailing))
-                        )
+                        .trialGlassTinted(cornerRadius: 10,
+                                          tint: Color.brandPink,
+                                          fallback: AnyShapeStyle(LinearGradient(colors: [.brandPink, .brandPurple],
+                                                                                   startPoint: .leading, endPoint: .trailing)),
+                                          shadowColor: .clear, shadowRadius: 0, shadowY: 0)
                     }
                     .buttonStyle(.plain)
                     .handCursor()
@@ -784,10 +834,10 @@ struct WordCard: View {
                             .font(.system(size: 13))
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(Color.secondary.opacity(0.12))
-                            )
+                            .trialGlassTinted(cornerRadius: 10,
+                                              tint: Color.secondary,
+                                              fallback: AnyShapeStyle(Color.secondary.opacity(0.12)),
+                                              shadowColor: .clear, shadowRadius: 0, shadowY: 0)
                     }
                     .buttonStyle(.plain)
                     .handCursor()
@@ -804,13 +854,13 @@ struct WordCard: View {
                         .foregroundStyle(active ? Color.white : Color(nsColor: .secondaryLabelColor))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(active
-                                      ? AnyShapeStyle(LinearGradient(colors: [.brandBlue, .brandPurple],
-                                                                     startPoint: .leading, endPoint: .trailing))
-                                      : AnyShapeStyle(Color.secondary.opacity(0.14)))
-                        )
+                        .trialGlassTinted(cornerRadius: 10,
+                                          tint: active ? Color.brandBlue : Color.secondary,
+                                          fallback: active
+                                            ? AnyShapeStyle(LinearGradient(colors: [.brandBlue, .brandPurple],
+                                                                           startPoint: .leading, endPoint: .trailing))
+                                            : AnyShapeStyle(Color.secondary.opacity(0.14)),
+                                          shadowColor: .clear, shadowRadius: 0, shadowY: 0)
                     }
                     .buttonStyle(.plain)
                     .handCursor()
@@ -821,12 +871,7 @@ struct WordCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .shadow(color: .black.opacity(active ? 0.08 : 0.02),
-                        radius: active ? 12 : 5, y: 4)
-        )
+        .trialGlassCard(cornerRadius: 16, shadowOpacity: active ? 0.08 : 0.02, shadowRadius: active ? 12 : 5)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.secondary.opacity(active ? 0 : 0.28), lineWidth: 1.2)
