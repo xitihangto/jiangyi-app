@@ -1,0 +1,53 @@
+name: Release
+
+# 只在推标签 v* 时跑（例如 v0.21），推 main 不会触发。
+# 打标签并推送后，GitHub macOS runner 上自动构建并发布同名 Release。
+# 分发命令（公开库，对方终端粘贴一行就能下，不用登录、不用 token）：
+#   curl -L --fail -o ~/Downloads/LectureGen-v0.21.zip \
+#     https://github.com/xitihangto/jiangyi-app/releases/download/v0.21/LectureGen-v0.21.zip
+# 地址最后一段必须跟下面打包出来的文件名一字不差；标签和产物名都用 github.ref_name 拼，
+# 换标签就换地址，不用改这个文件。
+# 注意：产物是 build.sh 里的临时签名（codesign --sign -），不是 Developer ID 签名 + 公证，
+# 靠 curl 不打隔离属性绕过 Gatekeeper；如果苹果以后收紧这条路，要重新测。
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        # 只构建到 dist，不用 --install：runner 上不需要装到 /Applications，也不需要启动 App。
+        run: ./build.sh
+
+      - name: Check built app version matches tag
+        run: |
+          test -d "dist/讲义生成.app"
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "dist/讲义生成.app/Contents/Info.plist")"
+          TAG="${{ github.ref_name }}"
+          echo "tag=$TAG app_version=$VERSION"
+          test "$VERSION" = "${TAG#v}" || { echo "版本与标签不一致：包内是 $VERSION，标签是 $TAG，已停止"; exit 1; }
+
+      - name: Pack
+        run: |
+          ditto -c -k --keepParent "dist/讲义生成.app" "LectureGen-${{ github.ref_name }}.zip"
+          ls -lh "LectureGen-${{ github.ref_name }}.zip"
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            LectureGen-${{ github.ref_name }}.zip

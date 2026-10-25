@@ -1,9 +1,9 @@
 # 讲义生成 App · 交接文档
 
-> 最后更新：2026-10-25 ｜ 当前版本 **v0.20** ｜ 状态：**v0.20 为当前基线；用户已认可 v0.20 改动并先去多测几遍，下一改动起升 v0.21**
+> 最后更新：2026-10-25 ｜ 当前版本 **v0.21** ｜ 状态：**v0.21 新增 GitHub CI Release 分发（见 §5.14）；v0.20 基线已推到 GitHub，见 §5.14①**
 >
 > 📌 **接手先看**：§5.8（浏览器隐形）、§5.9（v0.14 结构）、§5.10（登录检测 / 诊断包）、
-> §5.11（v0.16 的光标 / 状态框 / Finder）、§5.12（v0.17 新功能）、§5.13（v0.19–v0.20）、§7 待办（已按用户决定结算）。
+> §5.11（v0.16 的光标 / 状态框 / Finder）、§5.12（v0.17 新功能）、§5.13（v0.19–v0.20）、§5.14（v0.21 GitHub 推送 + CI Release）、§7 待办（已按用户决定结算）。
 >
 > ⚠️ **重要**：v0.20 之前，v0.19 源码改完后并未实际安装过（/Applications 仍是 v0.17，dist 是 v0.18），
 > 所以 v0.20 直接作为基线，不再回头补 v0.19 的安装记录。安装以桌面一键脚本的核对日志为准，见 §2。
@@ -35,6 +35,7 @@
 - v0.20：等待总上限 10 分钟、状态框每 5 秒统一播报、分段开始有提示（见 §5.5 / §5.13③）
 - v0.20：页脚 ⋯ 菜单只剩「退出 DeepSeek 账号」，Word 卡只剩紫色渐变下载按钮（见 §5.13④）
 - v0.20：新图标 v3——蓝青绿渐变底、无外圈黑边、上下沿统一 m 型、无页内页间横线（见 §5.13①）
+- v0.21：GitHub CI 打包发布 Release，curl 一行下载（见 §5.14②）
 
 ### ⚠️ 已知不稳定点
 - 自动判定「AI 写完了」仍可能偶尔误判（四层判定，见 §5.5；v0.20 已把“稳定就当写完”收紧，见 §5.13③）
@@ -492,6 +493,25 @@ v0.15 实测全部符合预期。**改登录相关代码后跑这个，比肉眼
 **⑤ 版本规则（用户 2026-10-25 晚间定）。**
 - v0.20 是当前基线，写好 handover 后，接下来任何改动都升 v0.21，不再在 v0.20 上叠加。
 - 下一改动时先把 `build.sh` 的版本升到 0.21，再改代码、再跑桌面脚本、再更新本文。
+
+### 5.14 v0.21：GitHub 推送完成 + CI Release 分发
+
+**① v0.20 推到 GitHub（2026-10-25 晚间，之前说好记在 v0.21 里）。**
+- 仓库：公开库 xitihangto/jiangyi-app，默认分支 main；Muse 的 GitHub App 自动建库失败（403 Resource not accessible by integration），用户在网页上手动建库，建库时只带一个 Initial 提交（仅 LICENSE）。
+- 本地 main 根提交 d885a00 与远端 Initial 无共同历史，直接推会被拒；用户选了合并路线，本地合并成 f73e8f1（“合并 GitHub 初始 LICENSE 提交”），LICENSE 留着，标签 v0.20 仍指 d885a00，2026-10-25 20:00 推 main + 推标签成功，远端核对过根目录（LICENSE、HANDOVER 40654 字节、build.sh 3176 字节、Sources/Resources/Runtime/docs/tools）。
+- 连接器快照推送装不下完整仓库（1095 文件、含二进制与符号链接、Runtime 约 75MB，超 16MiB UTF-8 上限，且不带历史与标签），所以完整推送只能走 Mac 端 git；Muse 此前的 GitHub 授权不等于 Mac git 凭证，钥匙串凭证是用户在 Mac 上用 token + osxkeychain 另行存的，token 不发给 Muse。
+
+**② CI Release（v0.21 新增，文件 `.github/workflows/release.yml`）。**
+- 触发：只推标签 `v*` 时跑，不推 main 就不跑；打标签 `v0.21` 并推送后，GitHub macOS runner 上自动跑。
+- 流程：checkout → `./build.sh`（只构建到 dist，不用 --install，runner 上不需要装到 /Applications）→ 用 PlistBuddy 核对包内版本与标签一致（标签去 v 后要等于 CFBundleShortVersionString，否则停下）→ `ditto -c -k --keepParent` 把 `dist/讲义生成.app` 打成 `LectureGen-<标签>.zip` → softprops/action-gh-release 发布同名 Release 并上传该 zip，Release 说明用 GitHub 自动生成的 notes。
+- 权限：workflow 里 `permissions: contents: write`，用来建 Release；不需要额外 token，runner 自带的 GITHUB_TOKEN 够用。
+- 分发命令（公开库，对方终端粘贴一行就能下，不用登录、不用 token，curl 不打隔离属性所以 Gatekeeper 不触发）：
+  ```bash
+  curl -L --fail -o ~/Downloads/LectureGen-v0.21.zip https://github.com/xitihangto/jiangyi-app/releases/download/v0.21/LectureGen-v0.21.zip
+  ```
+  地址最后一段必须跟 CI 上传的文件名一字不差；标签和产物名都用 `github.ref_name` 拼，换标签就换地址，不用改 workflow。
+- 失败时 Release 不会生成：先看仓库 Actions 那一栏的日志，修好再重新打标签/重跑；同一标签重复建 Release 前要先删掉已有的同名 Release，否则发布那步会冲突。
+- 注意：CI 产物是临时签名的 App（build.sh 里 `codesign --sign -`），靠 curl 不打隔离属性绕过 Gatekeeper，不是 Developer ID 签名 + 公证；如果苹果以后收紧这条路，要重新测。
 
 ---
 
