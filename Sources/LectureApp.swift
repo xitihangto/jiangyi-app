@@ -213,6 +213,14 @@ struct RotatingGradientBorder: View {
 struct ContentView: View {
     @EnvironmentObject var state: AppState
     @State private var showExitConfirm = false
+    @State private var showLogoutConfirm = false
+    // 主页面 hover：只做玻璃上的一层浅色提亮，不叠放大、提亮、brightness，
+    // 退出/取消按钮那次闪黑闪白就是叠了那些才出的，这里不再重蹈覆辙。
+    @State private var generateHover = false
+    @State private var loginHover = false
+    @State private var loginBreathing = false
+    @State private var recheckHover = false
+    @State private var footerHover = false
 
     var body: some View {
         ZStack {
@@ -278,6 +286,11 @@ struct ContentView: View {
                 exitConfirmOverlay
             }
         }
+        .overlay {
+            if showLogoutConfirm {
+                logoutConfirmOverlay
+            }
+        }
     }
 
     // MARK: 退出确认弹窗（窗口绝对中心）
@@ -320,6 +333,63 @@ struct ContentView: View {
                 .padding(.top, 4)
             }
             .padding(24)
+            .trialGlassCard(cornerRadius: 16, shadowOpacity: 0.18, shadowRadius: 16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: 退出 DeepSeek 确认弹窗（和退出 App 确认框同一个做法）
+
+    /// 以前是 NSAlert 系统弹窗，位置是屏幕居中，不是主界面绝对居中，
+    /// 框和按钮也不是玻璃。现在改成和退出确认框一样的 overlay：
+    /// 铺满整个 620×720 主界面，卡片在正中；整框玻璃，按钮也是系统玻璃，
+    /// 按钮 hover 就靠系统玻璃本身，不再叠自定义放大、提亮、brightness。
+    /// 文案原样保留 NSAlert 那两句，按钮位置和快捷键也和退出确认框一样：
+    /// 主操作在左、取消在右，回车主操作、Esc 取消。
+    private var logoutConfirmOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+            VStack(spacing: 14) {
+                Text("退出 DeepSeek 账号？")
+                    .font(.system(size: 16, weight: .semibold))
+                Text("会清掉本机保存的登录信息，然后重新打开登录页。之后需要重新扫码或输入账号密码登录。")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                // 按钮上下排、等宽对齐，中间留 10 空隙，和原来 NSAlert 的排布相似；
+                // 主操作不再用红，用蓝，退出 App 那个确认框的红按钮不动。
+                VStack(spacing: 10) {
+                    Button {
+                        showLogoutConfirm = false
+                        state.logoutDeepSeek()
+                    } label: {
+                        Text("退出并重新登录")
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .dialogGlassButtonStyle()
+                    .tint(Color.brandBlue)
+                    .foregroundStyle(.white)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(state.isRunning)
+                    Button {
+                        showLogoutConfirm = false
+                    } label: {
+                        Text("取消")
+                            .font(.system(size: 13.5, weight: .medium))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .dialogGlassButtonStyle()
+                    .keyboardShortcut(.cancelAction)
+                }
+                .padding(.top, 4)
+            }
+            .padding(24)
+            // 卡片定宽 360：小字一行约 24 个字，整段正好两行，不再被长句撑到满屏宽。
+            .frame(width: 360)
             .trialGlassCard(cornerRadius: 16, shadowOpacity: 0.18, shadowRadius: 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -389,18 +459,45 @@ struct ContentView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                     if !state.modesReady && !state.modesChecking {
-                        Button("重新检查") { state.retryDeepSeekModes() }
-                            .font(.system(size: 11, weight: .medium))
-                            .buttonStyle(.plain)
-                            .foregroundStyle(Color.brandBlue)
-                            .handCursor()
+                        Button {
+                            state.retryDeepSeekModes()
+                        } label: {
+                            Text("重新检查")
+                                .underline(recheckHover)
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.brandBlue)
+                        .handCursor()
+                        .onHover { recheckHover = $0 }
+                        .animation(.easeOut(duration: 0.15), value: recheckHover)
                     }
                 }
             }
 
             Spacer(minLength: 6)
 
-            if state.loginCountdown > 0 {
+            // 未登录时，在登录按钮左边显示提示 + 纯文字箭头指向按钮。
+            // 箭头就是文字“→”，不是带边框的图标，蓝、粗、明显；
+            // 已登录、还在检测时都不显示，只有登录按钮出现时才出现。
+            if state.loginSettled && !state.login.isLoggedIn {
+                HStack(spacing: 4) {
+                    Text("请登录后使用本软件")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.brandRed)
+                        .lineLimit(1)
+                    Text("→")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.brandBlue)
+                }
+            }
+
+            // 倒计时只在已登录时显示：登录成功后窗口 5 秒自动收起，那个逻辑不动。
+            // 退出后如果还残留一个旧倒计时，以前会先显示“x 秒后自动收起”再出登录按钮，
+            // 表达不对；未登录就直接显示登录按钮，不用等倒计时走完。
+            // 现在退出后倒计时本身也会在探针发现未登录时立刻停掉（见 AppState.reactToLoginState），
+            // 这里的条件是第二道保险。
+            if state.loginCountdown > 0 && state.login.isLoggedIn {
                 Text("\(state.loginCountdown) 秒后自动收起")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.brandBlue)
@@ -412,10 +509,23 @@ struct ContentView: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .trialGlassCapsule(fallbackFill: Color.brandBlue.opacity(0.13))
+                        .overlay(Capsule().fill(Color.brandBlue.opacity(loginHover ? 0.10 : 0)))
                         .foregroundStyle(Color.brandBlue)
                 }
                 .buttonStyle(.plain)
                 .handCursor()
+                .onHover { loginHover = $0 }
+                .animation(.easeOut(duration: 0.15), value: loginHover)
+                // 呼吸灯：外部光晕减弱，蓝光阴影在 0.10～0.28 透明度、4～8 半径之间 1.6 秒来回，
+                // 内部玻璃和悬停效果、时长都不变；登录后按钮消失，呼吸也停。
+                .shadow(color: Color.brandBlue.opacity(loginBreathing ? 0.28 : 0.10),
+                        radius: loginBreathing ? 8 : 4)
+                .onAppear {
+                    withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+                        loginBreathing = true
+                    }
+                }
+                .onDisappear { loginBreathing = false }
                 .help("只在登录时会弹出窗口，登录成功后自动收起")
             }
         }
@@ -445,9 +555,13 @@ struct ContentView: View {
                               tint: state.isRunning ? Color.brandRed : (state.canGenerate ? Color.brandBlue : Color.secondary),
                               fallback: buttonStyle,
                               shadowColor: shadowColor, shadowRadius: 16, shadowY: 7)
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(generateHover ? 0.06 : 0)))
         }
         .buttonStyle(.plain)
         .handCursor()
+        .onHover { generateHover = $0 }
+        .animation(.easeOut(duration: 0.15), value: generateHover)
         .disabled(!state.isRunning && !state.canGenerate)
     }
 
@@ -485,17 +599,19 @@ struct ContentView: View {
                 .foregroundStyle(.tertiary)
             Spacer()
             Menu {
-                Button("退出 DeepSeek 账号…") { state.confirmLogout() }
+                Button("退出 DeepSeek 账号…") { showLogoutConfirm = true }
                     .disabled(!state.login.isLoggedIn)
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(footerHover ? Color.primary : Color.secondary)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .frame(width: 20)
             .handCursor()
+            .onHover { footerHover = $0 && !state.isRunning }
+            .animation(.easeOut(duration: 0.15), value: footerHover)
             .disabled(state.isRunning)
         }
         .padding(.horizontal, 4)
@@ -532,6 +648,9 @@ struct UploadCard: View {
 
     /// 叉按钮悬停时整体向右上挪 1pt，阴影同步放大，看着像"浮起来"了一下
     @State private var isCloseHover = false
+    /// 整张上传卡的 hover：只在卡片上叠一层浅蓝提亮，不动玻璃本身，不放大不提亮，
+    /// 避免退出/取消按钮那次的闪黑闪白；生成进行中卡片被禁用时不响应 hover。
+    @State private var cardHover = false
 
     private var url: URL? {
         slot == .exam ? state.examURL : state.answerURL
@@ -584,6 +703,8 @@ struct UploadCard: View {
                 .transition(.scale.combined(with: .opacity))
             }
         }
+        .onHover { cardHover = $0 && !state.isRunning }
+        .animation(.easeOut(duration: 0.15), value: cardHover)
         .animation(.easeOut(duration: 0.18), value: active)
     }
 
@@ -620,6 +741,10 @@ struct UploadCard: View {
         .padding(.horizontal, 16)
         .contentShape(Rectangle())
         .trialGlassCard(cornerRadius: 16, shadowOpacity: active ? 0.09 : 0.03, shadowRadius: active ? 14 : 6)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.brandBlue.opacity(cardHover ? 0.04 : 0))
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.secondary.opacity(active ? 0 : 0.30), lineWidth: 1.2)
@@ -756,6 +881,13 @@ struct ProgressBar: View {
 struct WordCard: View {
     @EnvironmentObject var state: AppState
 
+    /// 卡片和里面三个按钮的 hover，做法和上传卡、生成按钮一样：
+    /// 只在玻璃上叠一层浅色提亮，不动玻璃、不放大、不提亮。
+    @State private var cardHover = false
+    @State private var downloadHover = false
+    @State private var exportHover = false
+    @State private var detailsHover = false
+
     private var active: Bool { state.docx.isReady }
 
     private var isFailed: Bool {
@@ -832,9 +964,13 @@ struct WordCard: View {
                                           fallback: AnyShapeStyle(LinearGradient(colors: [.brandPink, .brandPurple],
                                                                                    startPoint: .leading, endPoint: .trailing)),
                                           shadowColor: .clear, shadowRadius: 0, shadowY: 0)
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.white.opacity(exportHover ? 0.06 : 0)))
                     }
                     .buttonStyle(.plain)
                     .handCursor()
+                    .onHover { exportHover = $0 }
+                    .animation(.easeOut(duration: 0.15), value: exportHover)
 
                     Button {
                         state.showOutputPanel = true
@@ -847,9 +983,13 @@ struct WordCard: View {
                                               tint: Color.secondary,
                                               fallback: AnyShapeStyle(Color.secondary.opacity(0.12)),
                                               shadowColor: .clear, shadowRadius: 0, shadowY: 0)
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.white.opacity(detailsHover ? 0.06 : 0)))
                     }
                     .buttonStyle(.plain)
                     .handCursor()
+                    .onHover { detailsHover = $0 }
+                    .animation(.easeOut(duration: 0.15), value: detailsHover)
                 } else {
                     Button {
                         state.downloadDocx()
@@ -870,9 +1010,13 @@ struct WordCard: View {
                                                                            startPoint: .leading, endPoint: .trailing))
                                             : AnyShapeStyle(Color.secondary.opacity(0.14)),
                                           shadowColor: .clear, shadowRadius: 0, shadowY: 0)
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.white.opacity(downloadHover ? 0.06 : 0)))
                     }
                     .buttonStyle(.plain)
                     .handCursor()
+                    .onHover { downloadHover = $0 }
+                    .animation(.easeOut(duration: 0.15), value: downloadHover)
                     .disabled(!active)
 
                 }
@@ -883,12 +1027,18 @@ struct WordCard: View {
         .trialGlassCard(cornerRadius: 16, shadowOpacity: active ? 0.08 : 0.02, shadowRadius: active ? 12 : 5)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.brandBlue.opacity(cardHover ? 0.04 : 0))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.secondary.opacity(active ? 0 : 0.28), lineWidth: 1.2)
         )
         .overlay(
             RotatingGradientBorder(radius: 16, active: active)
                 .opacity(active ? 1 : 0)
         )
+        .onHover { cardHover = $0 && (active || isFailed) }
+        .animation(.easeOut(duration: 0.15), value: cardHover)
         .animation(.easeOut(duration: 0.2), value: active)
     }
 }

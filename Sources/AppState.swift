@@ -125,6 +125,10 @@ final class AppState: ObservableObject {
     /// 浏览器当前是不是为了登录而露出来的
     private var browserShownForLogin = false
     private var countdownTimer: Timer?
+    /// 退出后先把倒计时拦住，直到探针明确说已退出才放行；
+    /// 连续几次都说已登录，才算真正登录成功。
+    private var countdownSuppressed = false
+    private var consecutiveLoggedInCount = 0
 
     /// 统一的 JS 执行入口：内置浏览器 / Safari 两条通道
     func js(_ code: String) throws -> String {
@@ -273,6 +277,11 @@ final class AppState: ObservableObject {
             let result = self.probeLogin()
             DispatchQueue.main.async {
                 self.pollBusy = false
+                if result.0.isLoggedIn {
+                    self.consecutiveLoggedInCount += 1
+                } else {
+                    self.consecutiveLoggedInCount = 0
+                }
                 self.login = result.0
                 self.diagnostics = result.1
                 if result.0.kind == .noPermission { self.pollingStopped = true }
@@ -306,8 +315,32 @@ final class AppState: ObservableObject {
         guard browserShownForLogin else { return }
         if login.isLoggedIn {
             ensureDeepSeekModes()
-            startLoginCountdown()
+            // 只有连续两次都说已登录，才启动倒计时。
+            // 退出后偶然一次误判成已登录，次数不够，不会启动，
+            // 所以退出后永远不会先闪一下倒计时再出登录按钮。
+            // 退出后被拦住时，如果连续三次都说已登录，就当成真正登录，
+            // 放行并启动倒计时，自动登录那种情况也不会被一直拦住。
+            if countdownSuppressed {
+                if consecutiveLoggedInCount >= 3 {
+                    countdownSuppressed = false
+                    startLoginCountdown()
+                }
+                return
+            }
+            if consecutiveLoggedInCount >= 2 {
+                startLoginCountdown()
+            }
         } else {
+            if let timer = countdownTimer {
+                timer.invalidate()
+                countdownTimer = nil
+                loginCountdown = 0
+            }
+            // 探针明确说已退出，才把退出后的拦截放开；
+            // 之后用户真正登录，倒计时才能正常启动。
+            if login.kind == .loggedOut {
+                countdownSuppressed = false
+            }
             pushBadge("正在等待登录…  登录成功后本窗口会自动收起")
         }
     }
@@ -443,12 +476,20 @@ final class AppState: ObservableObject {
     }
 
     private func finishLogin() {
+        // 登录成功倒计时走完才到这里，正常情况仍收起窗口，逻辑不动。
+        // 但如果倒计时还没走完用户就退出了（或退出后残留的旧倒计时走完），
+        // 此时已经是未登录，登录窗口是留给用户重新登录用的，不能再收起它。
+        let stillLoggedIn = login.isLoggedIn
         browserShownForLogin = false
-        pushBadge("✓ 已登录")
+        if stillLoggedIn { pushBadge("✓ 已登录") }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self = self else { return }
-            self.browser.hideCompletely()
+            // 徽标不管怎样都要清掉，否则退出后网页上还残留“x 秒后自动收起”；
+            // 窗口只在登录成功时收起，退出后留给重新登录用，不收。
             self.clearBadge()
+            if stillLoggedIn {
+                self.browser.hideCompletely()
+            }
         }
         // 回到空闲状态框，标题会根据 deepThinkOn / smartSearchOn 显示开关状态。
         progress = ProgressInfo()
@@ -488,20 +529,9 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// 右下角「⋯」里的退出登录 —— 先问一句，别让人手滑把登录态清了
-    func confirmLogout() {
-        guard !isRunning else { return }
-        let alert = NSAlert()
-        alert.messageText = "退出 DeepSeek 账号？"
-        alert.informativeText = """
-        会清掉本机保存的登录信息，然后重新打开登录页。
-        之后需要重新扫码或输入账号密码登录。
-        """
-        alert.addButton(withTitle: "退出并重新登录")
-        alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        logoutDeepSeek()
-    }
+    /// 右下角「⋯」里的退出登录 —— 现在由主界面弹自定义确认框（和退出 App 确认框
+    /// 一样：主界面绝对居中、整框玻璃、按钮玻璃），不再用 NSAlert 系统弹窗。
+    /// 确认后走下面的 logoutDeepSeek；生成进行中时确认框里的退出按钮是禁用的。
 
     /// 真的清登录态。清完直接把登录窗口弹出来，用户不用再找按钮。
     func logoutDeepSeek() {
@@ -512,6 +542,8 @@ final class AppState: ObservableObject {
         countdownTimer?.invalidate()
         countdownTimer = nil
         loginCountdown = 0
+        countdownSuppressed = true
+        consecutiveLoggedInCount = 0
         browserShownForLogin = false
         modesChecked = false
         modesCheckInFlight = false
