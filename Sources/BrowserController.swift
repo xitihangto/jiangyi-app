@@ -11,7 +11,7 @@ final class ParkableWindow: NSWindow {
 }
 
 /// 内置浏览器：一个常驻的 WKWebView + 一个可挪到屏幕外的窗口
-final class BrowserController: NSObject, WKNavigationDelegate {
+final class BrowserController: NSObject, WKNavigationDelegate, NSWindowDelegate {
 
     private(set) var webView: WKWebView
     private var window: ParkableWindow?
@@ -44,6 +44,7 @@ final class BrowserController: NSObject, WKNavigationDelegate {
         )
         w.title = "DeepSeek 登录"
         w.isReleasedWhenClosed = false
+        w.delegate = self
         w.collectionBehavior = [.moveToActiveSpace]
         w.contentView = webView
         w.alphaValue = 0                 // 建出来就是隐形的，绝不会有"闪一下"
@@ -77,6 +78,14 @@ final class BrowserController: NSObject, WKNavigationDelegate {
         w.ignoresMouseEvents = true
         // 必须在窗口服务器里"存在"，否则 hitTest 找不到视图，注入的事件会被丢弃
         w.orderFrontRegardless()
+    }
+
+    /// 内置网页大叉只隐藏，不触发主界面退出确认框，更不退出 App。
+    /// 主界面大叉走 ExitConfirmWindowDelegate，那是另一个代理，不要混。
+    /// 点主界面“登录 DeepSeek”会走 openDeepSeek -> showForUser 重新显现。
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        hideCompletely()
+        return false
     }
 
     /// 只有登录时才把窗口真正显示出来

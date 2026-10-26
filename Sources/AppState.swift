@@ -111,6 +111,11 @@ final class AppState: ObservableObject {
     /// 登录探针会自然重试，不能在“尚未找到按钮”时就永久放弃。
     private var modesChecked = false
     private var modesCheckInFlight = false
+    /// “重新检查”蓝字按钮只在绿灯亮起 5 秒后仍未激活时才出现。
+    /// 绿灯刚亮那几秒，模式检测即使失败也不出重试字样、不出按钮，
+    /// 只在后台每轮探针自动重试，直到 5 秒定时器把这个开关打开。
+    @Published var modesRetryAllowed = false
+    private var modeRetryWorkItem: DispatchWorkItem?
 
     enum Engine: String, CaseIterable, Identifiable {
         case webview = "内置浏览器"
@@ -125,10 +130,12 @@ final class AppState: ObservableObject {
     /// 浏览器当前是不是为了登录而露出来的
     private var browserShownForLogin = false
     private var countdownTimer: Timer?
-    /// 退出后先把倒计时拦住，直到探针明确说已退出才放行；
-    /// 连续几次都说已登录，才算真正登录成功。
-    private var countdownSuppressed = false
-    private var consecutiveLoggedInCount = 0
+    /// 退出后等待确认：退出时先把登录行打回“正在检测”，
+    /// 探针第一次明确说已退出之前，登录按钮和提示字都不出现，
+    /// 期间探针偶尔误判成已登录也直接忽略，不翻状态、不启动倒计时。
+    /// 这样退出后按钮只出现一次，不会先出现、消失一秒、再出现。
+    /// 登录行永远不显示倒计时，倒计时只在内置网页徽标里。
+    private var awaitingLogoutConfirmation = false
 
     /// 统一的 JS 执行入口：内置浏览器 / Safari 两条通道
     func js(_ code: String) throws -> String {
@@ -265,7 +272,10 @@ final class AppState: ObservableObject {
         // 兜底：万一页面一直加载不出来，20 秒后也把「登录」按钮放出来，
         // 不然用户会一直卡在"正在检测"，没有出口
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
-            self?.loginSettled = true
+            // 退出等待确认时不放行：按钮要等探针确认已退出才出现，
+            // 这里只给正常启动检测兜底，不给退出检测兜底。
+            guard let self = self, !self.awaitingLogoutConfirmation else { return }
+            self.loginSettled = true
         }
     }
 
@@ -277,20 +287,39 @@ final class AppState: ObservableObject {
             let result = self.probeLogin()
             DispatchQueue.main.async {
                 self.pollBusy = false
-                if result.0.isLoggedIn {
-                    self.consecutiveLoggedInCount += 1
-                } else {
-                    self.consecutiveLoggedInCount = 0
+                // 退出等待确认期间：只有明确说已退出才放行、翻状态；
+                // 其它结果（包括偶尔误判成已登录）一律忽略，登录行继续显示“正在检测”，
+                // 不翻绿点、不出按钮、不启动倒计时，按钮只在确认后出现一次。
+                if self.awaitingLogoutConfirmation {
+                    if result.0.kind == .loggedOut {
+                        self.awaitingLogoutConfirmation = false
+                        self.login = result.0
+                        self.diagnostics = result.1
+                        self.loginSettled = true
+                        self.reactToLoginState()
+                    }
+                    return
                 }
+                let wasLoggedIn = self.login.isLoggedIn
                 self.login = result.0
                 self.diagnostics = result.1
                 if result.0.kind == .noPermission { self.pollingStopped = true }
                 if AppState.isDefinite(result.0.kind) { self.loginSettled = true }
-                // 如果启动时就已经是登录态（浏览器有缓存），ensureDeepSeekModes 也要跑
-                // 但只跑一次，modesChecked 会拦住重复调用
-                if result.0.kind == .loggedIn && !self.modesChecked && !self.modesCheckInFlight {
-                    print("[DEBUG] refreshLogin: 已登录，检查深度思考和智能搜索")
-                    self.ensureDeepSeekModes()
+                // 先后顺序：绿灯先亮，模式检测后开始，不要和绿灯同一轮探针一起跑。
+                // 第一轮刚变已登录时只亮绿灯、不跑模式检测，下一轮探针（已登录已稳定）
+                // 才开始检测，这样刚登录那一两秒页面还没准备好时，不会立刻冒出重试。
+                if result.0.kind == .loggedIn {
+                    if !wasLoggedIn {
+                        self.modeCheckDetail = "正在等待 DeepSeek 输入区加载"
+                        self.scheduleModeRetryTimer()
+                    } else if !self.modesChecked && !self.modesCheckInFlight {
+                        print("[DEBUG] refreshLogin: 已登录已稳定，检查深度思考和智能搜索")
+                        self.ensureDeepSeekModes()
+                    }
+                } else {
+                    self.modesRetryAllowed = false
+                    self.modeRetryWorkItem?.cancel()
+                    self.modeRetryWorkItem = nil
                 }
                 self.reactToLoginState()
             }
@@ -314,35 +343,34 @@ final class AppState: ObservableObject {
     private func reactToLoginState() {
         guard browserShownForLogin else { return }
         if login.isLoggedIn {
-            ensureDeepSeekModes()
-            // 只有连续两次都说已登录，才启动倒计时。
-            // 退出后偶然一次误判成已登录，次数不够，不会启动，
-            // 所以退出后永远不会先闪一下倒计时再出登录按钮。
-            // 退出后被拦住时，如果连续三次都说已登录，就当成真正登录，
-            // 放行并启动倒计时，自动登录那种情况也不会被一直拦住。
-            if countdownSuppressed {
-                if consecutiveLoggedInCount >= 3 {
-                    countdownSuppressed = false
-                    startLoginCountdown()
-                }
-                return
-            }
-            if consecutiveLoggedInCount >= 2 {
-                startLoginCountdown()
-            }
+            // 模式检测不在这里启动：refreshLogin 已经按“绿灯先亮、下一轮再检测”
+            // 的顺序管了，这里再调会绕过那个顺序，刚登录就和绿灯一起跑。
+            // 退出等待确认期间的误判根本到不了这里（refreshLogin 已拦住），
+            // 所以这里不用再连续数两次、三次：一次已登录就启动倒计时收窗口。
+            // 倒计时只在内置网页徽标里显示，登录行永远不显示倒计时数字。
+            startLoginCountdown()
         } else {
             if let timer = countdownTimer {
                 timer.invalidate()
                 countdownTimer = nil
                 loginCountdown = 0
             }
-            // 探针明确说已退出，才把退出后的拦截放开；
-            // 之后用户真正登录，倒计时才能正常启动。
-            if login.kind == .loggedOut {
-                countdownSuppressed = false
-            }
             pushBadge("正在等待登录…  登录成功后本窗口会自动收起")
         }
+    }
+
+    /// 绿灯亮起后 5 秒，才允许出现“重新检查”。5 秒内即使模式没激活，
+    /// 也只在后台自动重试，不出重试字样、不出按钮；5 秒后仍未激活，
+    /// 定时器把 modesRetryAllowed 打开，按钮和重试文案才出现。
+    private func scheduleModeRetryTimer() {
+        modeRetryWorkItem?.cancel()
+        modesRetryAllowed = false
+        let item = DispatchWorkItem { [weak self] in
+            guard let self = self, self.login.isLoggedIn, !self.modesChecked else { return }
+            self.modesRetryAllowed = true
+        }
+        modeRetryWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: item)
     }
 
     /// 登录成功后，确保深度思考 + 智能搜索都已激活。
@@ -411,13 +439,14 @@ final class AppState: ObservableObject {
                     // 不留一条成功提示遮住空闲状态框。
                     print("[DEBUG] 深度思考、智能搜索均已激活")
                 } else if let errorDescription {
-                    self.modeCheckDetail = "模式检查暂时失败，正在重试"
+                    // 5 秒内不出“重试”字样，只说在等页面；5 秒后仍失败，才说重试。
+                    self.modeCheckDetail = self.modesRetryAllowed ? "模式检查暂时失败，正在重试" : "正在等待页面加载"
                     print("[DEBUG] 开关检查将重试：\(errorDescription)")
                 } else {
                     if !deepThinkFound || !smartSearchFound {
                         self.modeCheckDetail = "未识别到模式开关，正在等待页面加载"
                     } else {
-                        self.modeCheckDetail = "模式尚未确认开启，正在重试"
+                        self.modeCheckDetail = self.modesRetryAllowed ? "模式尚未确认开启，正在重试" : "模式尚未确认开启，正在等待页面加载"
                     }
                     print("[DEBUG] 开关尚未全部就绪，将在下一次登录探针时重试")
                 }
@@ -542,11 +571,13 @@ final class AppState: ObservableObject {
         countdownTimer?.invalidate()
         countdownTimer = nil
         loginCountdown = 0
-        countdownSuppressed = true
-        consecutiveLoggedInCount = 0
+        awaitingLogoutConfirmation = true
         browserShownForLogin = false
         modesChecked = false
         modesCheckInFlight = false
+        modesRetryAllowed = false
+        modeRetryWorkItem?.cancel()
+        modeRetryWorkItem = nil
         deepThinkOn = false
         smartSearchOn = false
         modeCheckDetail = "正在等待 DeepSeek 输入区加载"
@@ -556,8 +587,12 @@ final class AppState: ObservableObject {
 
         browser.clearWebsiteData { [weak self] in
             guard let self = self else { return }
-            self.login = LoginStatus(kind: .loggedOut)
-            self.loginSettled = true
+            // 不要在这里立刻把状态写成已退出：清数据回调时页面还是旧的，
+            // 立刻写已退出会让登录按钮瞬间出现，下一轮探针误判已登录又把它藏起来，
+            // 再下一轮才重新出现，就是用户报的“出现、消失一秒、再出现”。
+            // 这里只打回“正在检测”，按钮和提示字等 refreshLogin 探针确认已退出才出现。
+            self.login = LoginStatus(kind: .unknown)
+            self.loginSettled = false
             self.pollingStopped = false
             self.say("已退出 DeepSeek 账号", detail: "请在打开的窗口里重新登录",
                     running: false, tone: .ok)

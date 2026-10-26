@@ -48,6 +48,17 @@ extension View {
             self.buttonStyle(.bordered)
         }
     }
+    /// 主操作按钮：26+ 走系统玻璃 prominent，旧系统走 borderedProminent。
+    /// 取消保持上面的 .glass。方案 2 的自定义 plain + tint 玻璃已删：
+    /// 它和取消的系统玻璃是两个世界的产物，用户 2026-10-26 否决。
+    /// 主按钮 hover 只叠黑 0.06 变深，和取消的系统 hover 逻辑统一，按下状态不动。
+    @ViewBuilder func dialogGlassProminentButtonStyle() -> some View {
+        if #available(macOS 26.0, *) {
+            self.buttonStyle(.glassProminent)
+        } else {
+            self.buttonStyle(.borderedProminent)
+        }
+    }
 }
 
 extension Color {
@@ -217,6 +228,8 @@ struct ContentView: View {
     // 主页面 hover：只做玻璃上的一层浅色提亮，不叠放大、提亮、brightness，
     // 退出/取消按钮那次闪黑闪白就是叠了那些才出的，这里不再重蹈覆辙。
     @State private var generateHover = false
+    @State private var exitPrimaryHover = false
+    @State private var logoutPrimaryHover = false
     @State private var loginHover = false
     @State private var loginBreathing = false
     @State private var recheckHover = false
@@ -253,6 +266,9 @@ struct ContentView: View {
             // 防止 background 的 NSView 在窗口挂接时序上没赶上。
             DispatchQueue.main.async {
                 for window in NSApplication.shared.windows {
+                    // 内置网页窗口跳过：它有自己的大叉逻辑（只隐藏），
+                    // 要是也挂上退出确认代理，点它的大叉就会弹主界面退出框。
+                    if window is ParkableWindow { continue }
                     window.delegate = ExitConfirmWindowDelegate.shared
                 }
             }
@@ -307,6 +323,11 @@ struct ContentView: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 HStack(spacing: 13) {
+                    // 方案 1：主按钮保持系统玻璃 prominent，只在上面叠一层黑 0.06 hover 变深，
+                    // 和取消按钮的系统 hover 逻辑统一（hover 变深、按下不弹起变浅是系统
+                    // 自带的按下状态，这里只改 hover，不动按下）。不叠放大、不提亮、
+                    // 不加手型光标。主窗口失焦时带颜色按钮变灰是系统行为，用户表示不介意，
+                    // 不用自定义样式去绕它。
                     Button {
                         NSApplication.shared.terminate(nil)
                     } label: {
@@ -315,9 +336,13 @@ struct ContentView: View {
                             .padding(.horizontal, 20)
                             .padding(.vertical, 6)
                     }
-                    .dialogGlassButtonStyle()
+                    .dialogGlassProminentButtonStyle()
                     .tint(Color.brandRed)
                     .foregroundStyle(.white)
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.black.opacity(exitPrimaryHover ? 0.06 : 0)))
+                    .onHover { exitPrimaryHover = $0 }
+                    .animation(.easeOut(duration: 0.15), value: exitPrimaryHover)
                     .keyboardShortcut(.defaultAction)
                     Button {
                         showExitConfirm = false
@@ -369,9 +394,13 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 6)
                     }
-                    .dialogGlassButtonStyle()
+                    .dialogGlassProminentButtonStyle()
                     .tint(Color.brandBlue)
                     .foregroundStyle(.white)
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.black.opacity(logoutPrimaryHover ? 0.06 : 0)))
+                    .onHover { logoutPrimaryHover = $0 }
+                    .animation(.easeOut(duration: 0.15), value: logoutPrimaryHover)
                     .keyboardShortcut(.defaultAction)
                     .disabled(state.isRunning)
                     Button {
@@ -458,7 +487,9 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    if !state.modesReady && !state.modesChecking {
+                    // “重新检查”只在绿灯亮起 5 秒后仍未激活时出现，
+                    // 5 秒内即使检测失败也不出现，见 AppState.modesRetryAllowed。
+                    if !state.modesReady && !state.modesChecking && state.modesRetryAllowed {
                         Button {
                             state.retryDeepSeekModes()
                         } label: {
@@ -492,17 +523,11 @@ struct ContentView: View {
                 }
             }
 
-            // 倒计时只在已登录时显示：登录成功后窗口 5 秒自动收起，那个逻辑不动。
-            // 退出后如果还残留一个旧倒计时，以前会先显示“x 秒后自动收起”再出登录按钮，
-            // 表达不对；未登录就直接显示登录按钮，不用等倒计时走完。
-            // 现在退出后倒计时本身也会在探针发现未登录时立刻停掉（见 AppState.reactToLoginState），
-            // 这里的条件是第二道保险。
-            if state.loginCountdown > 0 && state.login.isLoggedIn {
-                Text("\(state.loginCountdown) 秒后自动收起")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.brandBlue)
-                    .lineLimit(1)
-            } else if state.loginSettled && !state.login.isLoggedIn {
+            // 登录行永远不显示倒计时：登录成功后 5 秒收窗口的倒计时，
+            // 只在内置网页的徽标里显示（AppState.pushBadge），主界面这里不显示。
+            // 未登录就直接显示登录按钮；退出后按钮要等探针确认已退出才出现，
+            // 见 AppState.logoutDeepSeek / refreshLogin 的等待确认逻辑。
+            if state.loginSettled && !state.login.isLoggedIn {
                 Button { state.openDeepSeek() } label: {
                     Text("登录 DeepSeek")
                         .font(.system(size: 12, weight: .semibold))
