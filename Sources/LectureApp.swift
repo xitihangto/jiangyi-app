@@ -339,8 +339,12 @@ struct ContentView: View {
                     .dialogGlassProminentButtonStyle()
                     .tint(Color.brandRed)
                     .foregroundStyle(.white)
+                    // 叠层本身不接点击：不加这一句，叠层盖在系统玻璃按钮上面，
+                    // 即使填充透明也会挡住鼠标，退出按钮点不下去（2026-10-26 用户报）。
+                    // 加在叠层内容上，不是加在整个按钮上，否则按钮自己也被禁点了。
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.black.opacity(exitPrimaryHover ? 0.06 : 0)))
+                        .fill(Color.black.opacity(exitPrimaryHover ? 0.06 : 0))
+                        .allowsHitTesting(false))
                     .onHover { exitPrimaryHover = $0 }
                     .animation(.easeOut(duration: 0.15), value: exitPrimaryHover)
                     .keyboardShortcut(.defaultAction)
@@ -398,7 +402,8 @@ struct ContentView: View {
                     .tint(Color.brandBlue)
                     .foregroundStyle(.white)
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.black.opacity(logoutPrimaryHover ? 0.06 : 0)))
+                        .fill(Color.black.opacity(logoutPrimaryHover ? 0.06 : 0))
+                        .allowsHitTesting(false))
                     .onHover { logoutPrimaryHover = $0 }
                     .animation(.easeOut(duration: 0.15), value: logoutPrimaryHover)
                     .keyboardShortcut(.defaultAction)
