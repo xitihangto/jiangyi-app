@@ -11,7 +11,15 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 echo "▸ 编译 Swift"
-swiftc -O -o "$APP/Contents/MacOS/$BIN" Sources/*.swift
+# 自动化会话 / 非交互环境里，swift 驱动会用 sandbox-exec 包一层去起宏插件服务，
+# 而沙箱规则应用会被拒，报「SwiftUIMacros ... produced malformed response」，
+# SwiftUI 的 @State 就展不开（连带一堆假的「self is immutable」错误）。
+# 加 -disable-sandbox 关掉这层包裹即可；老工具链不认这个参数时自动不加，行为与原来一致。
+SANDBOX_FLAG=""
+if swiftc -disable-sandbox -version >/dev/null 2>&1; then
+  SANDBOX_FLAG="-disable-sandbox"
+fi
+swiftc -O $SANDBOX_FLAG -o "$APP/Contents/MacOS/$BIN" Sources/*.swift
 
 echo "▸ 拷入资源（内置附件 + 图标 + 本地化）"
 cp -R Resources/. "$APP/Contents/Resources/"
@@ -36,8 +44,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleIdentifier</key><string>com.workbuddy.lecturegen</string>
 	<key>CFBundleExecutable</key><string>LectureGen</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>0.27</string>
-	<key>CFBundleVersion</key><string>27</string>
+	<key>CFBundleShortVersionString</key><string>0.28</string>
+	<key>CFBundleVersion</key><string>28</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>CFBundleDevelopmentRegion</key><string>zh-Hans</string>

@@ -233,7 +233,7 @@ struct ContentView: View {
     @State private var loginHover = false
     @State private var loginBreathing = false
     @State private var recheckHover = false
-    @State private var footerHover = false
+    @State private var logoutHover = false
 
     var body: some View {
         ZStack {
@@ -251,7 +251,6 @@ struct ContentView: View {
                     generateButton
                     ProgressCard()
                     WordCard()
-                    footer
                 }
                 .padding(.horizontal, 22)
                 .padding(.top, 18)
@@ -289,13 +288,27 @@ struct ContentView: View {
                 state.runLoginSelfTest()
             } else if CommandLine.arguments.contains("--modeprobe") {
                 state.runModeProbe()
+            } else if CommandLine.arguments.contains("--logdemo") {
+                // 演示「跑完一轮 + 日志面板打开」，只为截图看版式
+                state.applyLogDemo(openPanel: true)
+            } else if CommandLine.arguments.contains("--logdemo-closed") {
+                // 同上，但面板关着，用来看 Word 卡自己的样子
+                state.applyLogDemo(openPanel: false)
+            } else if CommandLine.arguments.contains("--faildemo") {
+                // 失败态：验证「失败只改一行字、按钮不换」
+                state.applyLogDemo(openPanel: false, failed: true)
             }
-        }
-        .sheet(isPresented: $state.showOutputPanel) {
-            OutputSheet().environmentObject(state)
         }
         .onReceive(NotificationCenter.default.publisher(for: .lectureAppConfirmExit)) { _ in
             showExitConfirm = true
+        }
+        .overlay(alignment: .top) {
+            // 运行日志：只压暗上半屏，底部 Word 卡（含「详情」按钮）留出来。
+            // 面板绝不能盖住自己的开关 —— 盖住了用户就没法再点一次收起来。
+            if state.showLog {
+                LogPanel(onClose: { state.closeLog() })
+                    .transition(.opacity.combined(with: .scale(scale: 0.985, anchor: .top)))
+            }
         }
         .overlay {
             if showExitConfirm {
@@ -379,7 +392,7 @@ struct ContentView: View {
         ZStack {
             Color.black.opacity(0.35)
             VStack(spacing: 14) {
-                Text("退出 DeepSeek 账号？")
+                Text("登出 DeepSeek 账号？")
                     .font(.system(size: 16, weight: .semibold))
                 Text("会清掉本机保存的登录信息，然后重新打开登录页。之后需要重新扫码或输入账号密码登录。")
                     .font(.system(size: 13))
@@ -393,7 +406,7 @@ struct ContentView: View {
                         showLogoutConfirm = false
                         state.logoutDeepSeek()
                     } label: {
-                        Text("退出并重新登录")
+                        Text("登出并重新登录")
                             .font(.system(size: 13.5, weight: .semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 6)
@@ -558,9 +571,37 @@ struct ContentView: View {
                 .onDisappear { loginBreathing = false }
                 .help("只在登录时会弹出窗口，登录成功后自动收起")
             }
+
+            // 双绿灯（已登录 + 模式已激活）之后 0.5 秒出现：登出 DeepSeek。
+            // 它接的是原来右下角「⋯」菜单里的「退出账号」，那个菜单连同底部状态行
+            // 一起删掉了（用户 2026-10-27 要求），所以这是现在唯一的登出入口。
+            // 点它只弹确认框，真正清登录态在确认之后。
+            if state.logoutReady {
+                Button { showLogoutConfirm = true } label: {
+                    Text("登出 DeepSeek")
+                        // 不加粗：用户 2026-10-27 明确要求
+                        .font(.system(size: 12))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .trialGlassCapsule(fallbackFill: Color.brandBlue.opacity(0.13))
+                        .overlay(Capsule().fill(Color.brandBlue.opacity(logoutHover ? 0.10 : 0)))
+                        .foregroundStyle(Color.brandBlue)
+                }
+                .buttonStyle(.plain)
+                .handCursor()
+                .onHover { logoutHover = $0 }
+                .animation(.easeOut(duration: 0.15), value: logoutHover)
+                // 生成中禁点：登出会清掉整个网页数据，正在跑的这一轮直接废掉
+                .disabled(state.isRunning)
+                .help("登出 DeepSeek 账号，会清掉本机保存的登录信息")
+                .transition(.opacity)
+            }
         }
         .padding(.horizontal, 4)
         .frame(height: 30)
+        // 「登出 DeepSeek」按钮出现 / 消失用 0.5 秒淡入淡出。
+        // 只绑 logoutReady，别给它挂别的动画。
+        .animation(.easeOut(duration: 0.5), value: state.logoutReady)
     }
 
     // MARK: 主按钮
@@ -617,36 +658,13 @@ struct ContentView: View {
         return AnyShapeStyle(Color.secondary.opacity(0.16))
     }
 
-    // MARK: 页脚
-
-    private var footer: some View {
-        HStack(spacing: 9) {
-            Circle()
-                .fill(state.pythonReady ? Color.green : Color.red)
-                .frame(width: 6, height: 6)
-            Text(state.pythonReady ? "运行环境已就绪" : "运行环境缺失，无法生成讲义")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-            Spacer()
-            Menu {
-                Button("退出 DeepSeek 账号…") { showLogoutConfirm = true }
-                    .disabled(!state.login.isLoggedIn)
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 13))
-                    .foregroundStyle(footerHover ? Color.primary : Color.secondary)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .frame(width: 20)
-            .handCursor()
-            .onHover { footerHover = $0 && !state.isRunning }
-            .animation(.easeOut(duration: 0.15), value: footerHover)
-            .disabled(state.isRunning)
-        }
-        .padding(.horizontal, 4)
-        .padding(.top, 2)
-    }
+    // 页脚整条删了（用户 2026-10-27 要求）。
+    //
+    // 原来左边是「绿点 + 运行环境已就绪」，右边是「⋯」菜单（里面只有一项「退出 DeepSeek 账号…」）。
+    // 删的理由：绿灯从来没红过 —— 运行环境是打进 App 包里的，缺了根本打不开，
+    // 这条告警一次都没起过作用；「⋯」菜单则是因为登出改成了标题行里那个独立按钮。
+    // 所以连带 `pythonReady` 在界面上也没有引用了（属性还在 AppState 里，留着不碍事）。
+    // 别把绿灯加回来。
 }
 
 // MARK: - 背景
@@ -911,19 +929,13 @@ struct ProgressBar: View {
 struct WordCard: View {
     @EnvironmentObject var state: AppState
 
-    /// 卡片和里面三个按钮的 hover，做法和上传卡、生成按钮一样：
+    /// 卡片和里面按钮的 hover，做法和上传卡、生成按钮一样：
     /// 只在玻璃上叠一层浅色提亮，不动玻璃、不放大、不提亮。
     @State private var cardHover = false
     @State private var downloadHover = false
-    @State private var exportHover = false
-    @State private var detailsHover = false
+    @State private var logHover = false
 
     private var active: Bool { state.docx.isReady }
-
-    private var isFailed: Bool {
-        if case .failed = state.docx { return true }
-        return false
-    }
 
     private var message: String {
         switch state.docx {
@@ -935,7 +947,9 @@ struct WordCard: View {
             let kb = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int ?? 0) / 1024
             return "已经生成好了（\(kb) KB），点下面的按钮保存到电脑里。"
         case .failed(let why):
-            return "这次没成功：\(why)。诊断日志已自动留在本机，需要发给开发者时点下面的按钮。"
+            // 失败只改这一行字，卡片其他部分一点不变（用户 2026-10-27：
+            // 不要换按钮、不要弹面板、不要导 md/截图，日志一律看「详情」）。
+            return "这次没成功：\(why)。点右上角「详情」可以看到这次运行的完整日志。"
         }
     }
 
@@ -958,12 +972,32 @@ struct WordCard: View {
                     .font(.system(size: 14, weight: .semibold))
                 Spacer()
                 if active {
+                    // 纯绿字，不加药丸底（用户 2026-10-27：带边框看着像个能点的按钮）
                     Text("可下载")
                         .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.green)
+                }
+                // 运行日志入口。跑过一次之后才出现（没跑过没什么可看的）。
+                // 放在标题行而不是按钮行：不挤「下载」的宽度，也不改变卡片高度。
+                if !state.progressLines.isEmpty {
+                    Button { state.toggleLog() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "text.alignleft")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(state.showLog ? "收起" : "详情")
+                                .font(.system(size: 11))
+                        }
+                        .foregroundStyle(Color.brandBlue)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
-                        .trialGlassCapsule(fallbackFill: Color.green.opacity(0.16))
-                        .foregroundStyle(.green)
+                        .trialGlassCapsule(fallbackFill: Color.brandBlue.opacity(logHover ? 0.16 : 0.09))
+                        .overlay(Capsule().fill(Color.brandBlue.opacity(logHover ? 0.10 : 0)))
+                    }
+                    .buttonStyle(.plain)
+                    .handCursor()
+                    .onHover { logHover = $0 }
+                    .animation(.easeOut(duration: 0.15), value: logHover)
+                    .help("看这次运行的详细日志")
                 }
             }
 
@@ -974,90 +1008,48 @@ struct WordCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 10) {
-                if isFailed {
-                    // 失败时主按钮换成「导出诊断报告」——
-                    // 用户不需要看懂 Python，只要把这个文件夹发给开发者就行
-                    Button {
-                        state.exportDiagnostics()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 12))
-                            Text("导出诊断报告")
-                                .font(.system(size: 13, weight: .medium))
-                        }
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .trialGlassTinted(cornerRadius: 10,
-                                          tint: Color.brandPink,
-                                          fallback: AnyShapeStyle(LinearGradient(colors: [.brandPink, .brandPurple],
-                                                                                   startPoint: .leading, endPoint: .trailing)),
-                                          shadowColor: .clear, shadowRadius: 0, shadowY: 0)
-                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.white.opacity(exportHover ? 0.06 : 0)))
+                // 成功失败都是这一个按钮（用户 2026-10-27：失败时不要换按钮、
+                // 不要弹面板、不要导 md/截图）。没生成好就是禁用态，日志去「详情」看。
+                Button {
+                    state.downloadDocx()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: active ? "arrow.down.circle.fill" : "arrow.down.circle")
+                            .font(.system(size: 12))
+                        Text(buttonTitle)
+                            .font(.system(size: 13, weight: .medium))
                     }
-                    .buttonStyle(.plain)
-                    .handCursor()
-                    .onHover { exportHover = $0 }
-                    .animation(.easeOut(duration: 0.15), value: exportHover)
-
-                    Button {
-                        state.showOutputPanel = true
-                    } label: {
-                        Text("查看详情")
-                            .font(.system(size: 13))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .trialGlassTinted(cornerRadius: 10,
-                                              tint: Color.secondary,
-                                              fallback: AnyShapeStyle(Color.secondary.opacity(0.12)),
-                                              shadowColor: .clear, shadowRadius: 0, shadowY: 0)
-                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.white.opacity(detailsHover ? 0.06 : 0)))
-                    }
-                    .buttonStyle(.plain)
-                    .handCursor()
-                    .onHover { detailsHover = $0 }
-                    .animation(.easeOut(duration: 0.15), value: detailsHover)
-                } else {
-                    Button {
-                        state.downloadDocx()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: active ? "arrow.down.circle.fill" : "arrow.down.circle")
-                                .font(.system(size: 12))
-                            Text(buttonTitle)
-                                .font(.system(size: 13, weight: .medium))
-                        }
-                        .foregroundStyle(active ? Color.white : Color(nsColor: .secondaryLabelColor))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .trialGlassTinted(cornerRadius: 10,
-                                          tint: active ? Color.brandBlue : Color.secondary,
-                                          fallback: active
-                                            ? AnyShapeStyle(LinearGradient(colors: [.brandBlue, .brandPurple],
-                                                                           startPoint: .leading, endPoint: .trailing))
-                                            : AnyShapeStyle(Color.secondary.opacity(0.14)),
-                                          shadowColor: .clear, shadowRadius: 0, shadowY: 0)
-                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.white.opacity(downloadHover ? 0.06 : 0)))
-                    }
-                    .buttonStyle(.plain)
-                    .handCursor()
-                    .onHover { downloadHover = $0 }
-                    .animation(.easeOut(duration: 0.15), value: downloadHover)
-                    .disabled(!active)
-
+                    .foregroundStyle(active ? Color.white : Color(nsColor: .secondaryLabelColor))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .trialGlassTinted(cornerRadius: 10,
+                                      tint: active ? Color.brandBlue : Color.secondary,
+                                      fallback: active
+                                        ? AnyShapeStyle(LinearGradient(colors: [.brandBlue, .brandPurple],
+                                                                       startPoint: .leading, endPoint: .trailing))
+                                        : AnyShapeStyle(Color.secondary.opacity(0.14)),
+                                      shadowColor: .clear, shadowRadius: 0, shadowY: 0)
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(downloadHover ? 0.06 : 0)))
                 }
+                .buttonStyle(.plain)
+                .handCursor()
+                .onHover { downloadHover = $0 }
+                .animation(.easeOut(duration: 0.15), value: downloadHover)
+                .disabled(!active)
             }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .trialGlassCard(cornerRadius: 16, shadowOpacity: active ? 0.08 : 0.02, shadowRadius: active ? 12 : 5)
+        // 卡片 hover 叠层盖在整个卡片上面，包括里面的下载/导出/详情按钮。
+        // 不加 allowsHitTesting(false)，即使填充透明也会挡住鼠标，和 2026-10-26 退出按钮
+        // 那个 bug 同一个根源（见 AGENTS.md 按钮教训）。加在叠层内容上，不是整个卡片上，
+        // 否则卡片里的按钮全被禁点；hover 还是靠卡片自己的 onHover，不受影响。
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color.brandBlue.opacity(cardHover ? 0.04 : 0))
+                .allowsHitTesting(false)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -1067,58 +1059,136 @@ struct WordCard: View {
             RotatingGradientBorder(radius: 16, active: active)
                 .opacity(active ? 1 : 0)
         )
-        .onHover { cardHover = $0 && (active || isFailed) }
+        .onHover { cardHover = $0 && active }
         .animation(.easeOut(duration: 0.15), value: cardHover)
         .animation(.easeOut(duration: 0.2), value: active)
     }
 }
 
-// MARK: - 运行输出面板（只在出错时自动弹出）
+// MARK: - 运行日志面板
 
-struct OutputSheet: View {
+/// 「详情」按钮打开的那块。成功跑完也能看 —— 以前日志只在失败诊断的 md 里出现，
+/// 成功一次就什么都看不到，想确认「提示词回读一致」也没地方确认。
+///
+/// 两个约束（用户 2026-10-27 定）：
+/// 1. **不许盖住自己的开关**。所以压暗层只铺上半屏（`scrimHeight`），底部给 Word 卡
+///    留出一条不遮不挡的带子，「详情」按钮永远点得到。
+/// 2. 显示/隐藏跟预览卡片一个节奏：`withAnimation(.easeOut(0.18))` + opacity 过渡。
+///    窗口本来就是固定 620×720，所以这里直接写死尺寸，不追求自适应。
+struct LogPanel: View {
     @EnvironmentObject var state: AppState
+    let onClose: () -> Void
+
+    private var lines: [String] { state.progressLines }
+    private var scriptOutput: String { state.scriptOutput }
+
+    /// 压暗层高度 = 520。面板本身到 20+500=520 为止，Word 卡顶边在 538 左右，
+    /// 中间留 18pt 空隙 —— 少留一点压暗层就会压到 Word 卡上，那一小条会被当成「点面板外面」。
+    private let scrimHeight: CGFloat = 520
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("出错的详细信息")
-                .font(.system(size: 16, weight: .semibold))
-            Text("这一段是给开发排查用的。你可以直接关掉，也可以复制下来发给开发者。")
-                .font(.system(size: 11))
+        ZStack(alignment: .top) {
+            Color.black.opacity(0.14)
+                .frame(maxWidth: .infinity)
+                .frame(height: scrimHeight)
+                .contentShape(Rectangle())
+                .onTapGesture { onClose() }
+
+            card.padding(.top, 20)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var card: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            logList
+        }
+        .frame(width: 566, height: 500)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .fill(Color(nsColor: .windowBackgroundColor)))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1))
+        .shadow(color: .black.opacity(0.22), radius: 24, y: 10)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "text.alignleft")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.brandBlue)
+            Text("运行日志")
+                .font(.system(size: 13, weight: .semibold))
+            Text("\(lines.count) 行")
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
-
-            ScrollView {
-                Text(state.scriptOutput.isEmpty ? "（没有输出）" : state.scriptOutput)
-                    .font(.system(size: 11, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
+            Spacer()
+            // 叉按钮统一白底黑字（用户 2026-10-27 定的规矩，系统级的除外）
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.black.opacity(0.72))
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.white))
+                    .overlay(Circle().strokeBorder(Color.black.opacity(0.14), lineWidth: 0.8))
+                    .shadow(color: .black.opacity(0.20), radius: 3, y: 1)
             }
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(nsColor: .textBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-            )
+            .buttonStyle(.plain)
+            .handCursor()
+            .help("关闭（Esc）")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
 
-            HStack {
-                Button("复制全部") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(state.scriptOutput, forType: .string)
+    private var logList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    if lines.isEmpty && scriptOutput.isEmpty {
+                        Text("这次还没有日志。跑一次生成就会有了。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                        Text(line)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(tint(for: line))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id(index)
+                    }
+                    if !scriptOutput.isEmpty {
+                        Divider().padding(.vertical, 6)
+                        Text("—— 脚本输出 ——")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text(scriptOutput)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    // 滚到底用的锚点
+                    Color.clear.frame(height: 1).id("bottom")
                 }
-                .controlSize(.small)
-
-                Button("导出诊断报告到桌面") { state.exportDiagnostics() }
-                    .controlSize(.small)
-
-                Spacer()
-
-                Button("知道了") { state.showOutputPanel = false }
-                    .keyboardShortcut(.defaultAction)
+                .padding(12)
+            }
+            .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+            // 跟着日志增长自动滚到底。用 onReceive 而不是 onChange：
+            // onChange 的单参数写法在 macOS 14 已废弃，而本工程部署目标是 13.0。
+            .onReceive(state.$progressLines) { _ in
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
-        .padding(20)
-        .frame(width: 660, height: 460)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.55))
+    }
+
+    /// 出错的标红，警告标黄，其余保持正文色 —— 扫一眼就知道哪行有问题
+    private func tint(for line: String) -> Color {
+        if line.hasPrefix("✗") { return Color.brandRed }
+        if line.contains("⚠️") || line.contains("还没出现") { return Color.orange }
+        return Color.primary.opacity(0.85)
     }
 }

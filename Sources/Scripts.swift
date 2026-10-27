@@ -66,20 +66,11 @@ enum Scripts {
 
     // MARK: - v0.2 上传与发送
 
-    /// 点「开启新对话」，清掉上一轮残留的附件
-    static let newChat = #"""
-    (function(){
-      var els=document.querySelectorAll('button,a,[role=button]');
-      for(var i=0;i<els.length;i++){
-        var t=(els[i].innerText||'').replace(/\s+/g,'').trim();
-        if(/^(开启新对话|新对话|新建对话|New chat)$/i.test(t)){
-          els[i].click();
-          return 'CLICKED:'+t;
-        }
-      }
-      return 'NOT_FOUND';
-    })()
-    """#
+    // 原来这里有个 `newChat`：找页面上「开启新对话」按钮点一下。
+    // 2026-10-27 撤掉了，原因是它在作文版上跑了 v0.12–v0.20 九个版本、**一次都没点中过**
+    // （每轮日志都是 NOT_FOUND），等于白花两三次 JS 往返。现在改成直接重载
+    // https://chat.deepseek.com/ 根地址 —— 根地址后面不带会话 id，重载出来必然是空白对话。
+    // 别再把这个选择器加回来，加第四版也不会中，改版一次就废一次。
 
     /// 探测输入区结构，同时检查「深度思考」和「智能搜索」是否都已激活。
     ///
@@ -208,6 +199,31 @@ enum Scripts {
         })(\#(namesJSON))
         """#
     }
+
+    /// 清空输入框（走 React 的 native setter，否则页面状态不更新）
+    ///
+    /// 为什么需要它：网页版收到附件后**自己**会把文件名当文字写进输入框
+    /// （见 HANDOVER §6.9，作文版实测截图）。不是我们写的，是它的前端行为。
+    /// 所以必须「等附件就位 → 清空 → 再填提示词」，顺序不能反：清早了网页还会补回来。
+    static let clearText = #"""
+    (function(){
+      var ta=document.querySelector('textarea');
+      if(!ta){return 'NO_TEXTAREA';}
+      var setter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;
+      setter.call(ta,'');
+      ta.dispatchEvent(new Event('input',{bubbles:true}));
+      ta.dispatchEvent(new Event('change',{bubbles:true}));
+      return 'OK:'+ta.value.length;
+    })()
+    """#
+
+    /// 回读输入框里的文字，用来校验填进去的提示词有没有被网页追加别的内容
+    static let readText = #"""
+    (function(){
+      var ta=document.querySelector('textarea');
+      return ta?ta.value:'__NO_TEXTAREA__';
+    })()
+    """#
 
     /// 把文字写进输入框（走 React 的 native setter，否则状态不更新）
     static func fillText(textJSON: String) -> String {

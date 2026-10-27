@@ -10,9 +10,9 @@ private struct UploadItem {
 extension AppState {
 
     static let promptText = """
-    执行《讲义制作规则.md》所规定的内容，但是因为现在是网页版无法输出文件，请你给出 Python 脚本文件我自己去执行，其他规则不变。
+    我传给你了 4 个文件，分别是《标准模式讲义.docx》、《讲义制作规则.md》、【考卷】、和【答案】，其中【考卷】和【答案】的文件命名可能不太规范，请你自行判断，执行《讲义制作规则.md》所规定的内容，但是因为现在是网页版，你无法输出文件，请你给出 Python 脚本文件我自己去执行。
 
-    补充说明（我的运行环境）：Python 3.12，已装好 python-docx，没有其他第三方库，请不要 import pandas、matplotlib、openpyxl 之类；脚本要能一次跑完，不要用 input() 等待键盘输入；最后请用 doc.save('文件名.docx') 保存。
+    补充说明（我的运行环境）：Python 3.12，已装好 python-docx，没有其他第三方库，请不要 import pandas、matplotlib、openpyxl 之类；脚本要能一次跑完，不要用 input() 等待键盘输入；最后用 save() 把成品存成 .docx，文件名用中文、能看出是哪篇作文。
 
     【格式要求，非常重要】代码的最后一个行必须原样写上这一行注释：
     # ===LECTURE-END===
@@ -86,7 +86,6 @@ extension AppState {
                              running: false,
                              tone: aborted ? .idle : .error)
                     if !aborted {
-                        self.lastFailure = failure
                         self.docx = .failed(failure)
                     }
                     return
@@ -123,10 +122,48 @@ extension AppState {
         ]
         var prompt = AppState.promptText
 
-        // 0. 先开一个新对话，避免上一轮的附件和上下文残留
-        let newChat = try self.js(Scripts.newChat)
-        log("新对话：\(newChat)")
-        Thread.sleep(forTimeInterval: 1.5)
+        // 0. 每次运行都重载根地址，保证是空白新对话。
+        //
+        // 以前是「先点页面上的『开启新对话』按钮，点不到才兜底重载」。这套在作文版上跑了
+        // v0.12 到 v0.20 整整九个版本，那个按钮**一次都没点中过**（每轮日志都是 NOT_FOUND），
+        // 等于每轮白等两三次 JS 往返，还要维护 30 行兜底代码。
+        // 根地址 https://chat.deepseek.com/ 后面不带任何会话 id，重载出来必然是空白对话，
+        // 这条路反而更硬：不依赖 DOM、不怕改版。代价是每次多 2~4 秒，相对整轮几分钟不算什么。
+        say("正在准备新对话…", detail: "重置页面中，稍等几秒", running: true)
+        if engine == .webview {
+            // loadDeepSeek 里有 NSWindow 操作，必须回主线程。但它是异步的，
+            // 等它跑起来再轮询标志的话，读到的是上一轮的 true —— 循环立刻退出，
+            // 日志里就是「用时 0.0 秒」，等于没等。所以先把标志同步打回 false 再派发。
+            browser.markReloading()
+            DispatchQueue.main.async { [weak self] in self?.browser.loadDeepSeek(force: true) }
+            var waited = 0.0
+            while !browser.isPageLoaded && waited < 25 {
+                try checkStop()
+                Thread.sleep(forTimeInterval: 0.25)
+                waited += 0.25
+            }
+            log("页面重载：\(String(format: "%.1f", waited)) 秒")
+            if !browser.isPageLoaded {
+                log("⚠️ 25 秒内没等到页面加载完成，继续尝试（后面探针会暴露真实状态）")
+            }
+        } else {
+            // Safari 模式没法从 App 里刷新页面，只能让它重新打开一次根地址（等同于新对话）
+            SafariBridge.openDeepSeek()
+            Thread.sleep(forTimeInterval: 3.0)
+            log("已在 Safari 里重新打开根地址")
+        }
+
+        // didFinish 只说明文档到了，SPA 还没渲染完。以前是固定睡 1.5 秒赌一把，
+        // 现在直接等输入框真的出现 —— 快的时候几百毫秒就过，慢的时候也不会白等。
+        var ready = 0.0
+        while ready < 10 {
+            try checkStop()
+            let p = (try? self.js(Scripts.probeComposer)) ?? ""
+            if p.contains("\"textarea\":true") { break }
+            Thread.sleep(forTimeInterval: 0.4)
+            ready += 0.4
+        }
+        if ready > 0 { log("等输入框出现：\(String(format: "%.1f", ready)) 秒") }
 
         // 1. 探针：确认输入框和文件框的结构
         // 注：深度思考+智能搜索已在登录成功时由 ensureDeepSeekModes() 处理，
@@ -187,12 +224,11 @@ extension AppState {
         }
         say("文件都传上去了", detail: "正在把题目和要求发给 AI", fraction: 0.68, running: true)
 
-        // 5. 填提示词
-        let filled = try self.js(Scripts.fillText(textJSON: jsonString(prompt)))
-        guard filled.hasPrefix("OK") else {
-            throw BridgeError.failed("文字填不进去：\(filled)")
-        }
-        log("提示词已填入（\(filled.dropFirst(3)) 字）")
+        // 5. 先清空输入框，再填提示词。
+        // 网页版收到附件后会把文件名当文字塞进输入框（HANDOVER §6.9，作文版实测截图），
+        // 不清的话提示词前面会挂着「IMG_3435.jpeg 未标题-1.png」这一串。
+        // 顺序必须是「先等附件就位 → 再清 → 再填」：清早了网页还会补回来。
+        _ = try fillPrompt(prompt)
 
         // 6. 发送
         if auto {
@@ -201,6 +237,13 @@ extension AppState {
                 say("马上开始生成…", detail: "\(second) 秒后自动发送，不用你操作",
                     fraction: 0.75, running: true)
                 Thread.sleep(forTimeInterval: 1.0)
+            }
+            // 发送前再确认一次：万一这几秒里网页又把文件名补进输入框，重填一遍。
+            // 只做回读比对，一致就不动输入框（无谓地清空重填反而多一次竞态）。
+            if try self.js(Scripts.readText).trimmingCharacters(in: .whitespacesAndNewlines)
+                != prompt.trimmingCharacters(in: .whitespacesAndNewlines) {
+                log("发送前回读不一致，重填提示词")
+                _ = try fillPrompt(prompt)
             }
             let sent = try self.js(Scripts.sendNow)
             log("发送结果：\(sent)")
@@ -216,15 +259,54 @@ extension AppState {
         }
     }
 
+    /// 清空输入框 → 填入提示词 → 回读校验。对不上就再来一次（最多两次）。
+    /// 回读这一步是关键：网页插入文件名是异步的，只靠「填完就当成功」会漏。
+    /// 返回 true 表示回读与提示词完全一致。
+    @discardableResult
+    private func fillPrompt(_ prompt: String) throws -> Bool {
+        for attempt in 1...2 {
+            _ = try self.js(Scripts.clearText)
+            // 清完稍等一下，让网页那边的 React 状态落定，否则它可能把我们填的又盖掉
+            Thread.sleep(forTimeInterval: attempt == 1 ? 0.35 : 0.8)
+
+            let filled = try self.js(Scripts.fillText(textJSON: jsonString(prompt)))
+            guard filled.hasPrefix("OK") else {
+                throw BridgeError.failed("文字填不进去：\(filled)")
+            }
+
+            let back = try self.js(Scripts.readText)
+            if sameText(back, prompt) {
+                log("提示词已填入并回读一致（\(prompt.count) 字）")
+                return true
+            }
+            log("第 \(attempt) 次填入后回读不一致：输入框 \(back.count) 字 / 应为 \(prompt.count) 字，清空重填")
+        }
+        // 两次都对不上就不再硬失败 —— 内容已经在框里，多出来的无非是文件名，AI 自己能认出来
+        log("⚠️ 提示词回读仍不一致，按当前内容发送")
+        say("提示词已填入", detail: "输入框内容和预期略有出入，仍按此发送", fraction: 0.7, running: true)
+        return false
+    }
+
+    /// 回读比对用的相等判断。只忽略首尾空白 —— 输入框偶尔会多一个尾随换行，
+    /// 那不是问题，不该为它触发一次重填。
+    private func sameText(_ a: String, _ b: String) -> Bool {
+        a.trimmingCharacters(in: .whitespacesAndNewlines)
+            == b.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - 等回复 / 抓代码
+
+    /// 等 AI 写完的总上限（秒）。**全 App 只有这一处定义**，改时长只改这里。
+    /// 用户 2026-10-26 定：这个规模 10 分钟就是上限，一到就判失败，不再顺延。
+    /// 上一版把总上限放到 30 分钟，结果一次成功跑了 15 分钟，太长了。
+    private static let replyDeadline: TimeInterval = 600
 
     /// 轮询回复区，直到内容不再变化；期间自动点「继续」
     /// 注意：点了不算数，必须验证页面内容真的涨了，否则记一次无效
-    private func waitForReply(timeout: TimeInterval = 240) throws -> String? {
-        // 用户要求：这个规模 10 分钟就是上限，10 分钟一到直接判失败，不再顺延。
-        // 上一版把总上限放到 30 分钟，结果一次成功跑了 15 分钟，太长了。
-        let hardDeadline = Date().addingTimeInterval(600)
-        var deadline = hardDeadline
+    private func waitForReply() throws -> String? {
+        // 以前签名上挂了个 `timeout: TimeInterval = 240` 的参数，但函数体压根不读它
+        // （直接写死 600），谁想改时长都会白改。2026-10-27 删掉，只留 replyDeadline。
+        let deadline = Date().addingTimeInterval(Self.replyDeadline)
         // 发送后先给页面一点时间开始动
         Thread.sleep(forTimeInterval: 3.0)
 
@@ -286,10 +368,10 @@ extension AppState {
                 endMarkRounds = 0
             }
 
-            // —— 统一播报（用户要求）：内部每轮判断增长，但状态框每 5 秒只报下面这一句，持续不断。
+            // —— 统一播报（用户要求）：内部每轮判断增长，但状态框每轮只报下面这一句，持续不断。
             // 不再有“正在写 / 正在读 / 快写完了”几套文案，也不再另起多套节奏。
             // 字数涨没涨，一看这句里的数字就知道；分段提示在下面点“继续”时会立刻报一次，
-            // 下一轮播报（5 秒后）再接上这句，不会立刻盖掉分段提示。
+            // 下一轮播报再接上这句，不会立刻盖掉分段提示。
             // 还没出现真的代码框、字数还是 0 时，别报“代码目前 0 字”，看着着急。
             // 先报思考中，直到代码框出现且字数大于 0，才恢复原来的代码字数播报。
             if blocks > 0 && codeLen > 0 {
@@ -384,19 +466,20 @@ extension AppState {
             // 【兜底判定】2026-10-25 的教训：旧代码“稳定 10 秒就按完成处理”，
             // 深度思考的思考间隙很容易超过 10 秒，结果抓到写了一半、字符串都没闭合的
             // 截断脚本（16216 字，第 368 行 SyntaxError），然后 Python 报错收场。
-            // 新规则：稳定满 60 秒（5 秒一轮，共 12 轮），且必须同时有收尾标志（.save / main），才按完成处理；
-            // 稳定满 60 秒但没有收尾标志，说明 AI 可能还在思考、也可能停了，
-            // 但绝不擅自执行一段没收尾的代码，继续等到总上限，宁可报“没等到完整回答”，
-            // 也不把截断脚本拿去执行。
+            //
+            // 2026-10-27 用户定：**不必等 60 秒**。理由是到目前为止结束标志从未失手，
+            // 60 秒纯属白等。改成「一轮没长 + 有收尾标志」就收工（循环 3 秒一轮，即约 3 秒）。
+            // 仍保留两条底线：① 没有收尾标志时绝不执行，继续等；② 总上限 10 分钟不变。
             if blocks > 0 {
                 if textLen == lastTextLen && codeLen == lastCodeLen {
                     stableRounds += 1
-                    if stableRounds >= 12 {
-                        if looksComplete {
-                            log("内容稳定 60 秒且有收尾标志，按完成处理")
-                            say("脚本看起来写完了", detail: "正在把它取回来…", running: true)
-                            return try grabScript()
-                        }
+                    if looksComplete && stableRounds >= 1 {
+                        log("内容 3 秒未变且有收尾标志，按完成处理")
+                        say("脚本看起来写完了", detail: "正在把它取回来…", running: true)
+                        return try grabScript()
+                    }
+                    // 没有收尾标志：攒够 60 秒（20 轮 × 3 秒）提示一次，然后继续等
+                    if stableRounds >= 20 {
                         log("内容稳定 60 秒但未见收尾标志，继续等，不擅自执行截断脚本")
                         stableRounds = 0
                     }
@@ -414,10 +497,12 @@ extension AppState {
                 stableRounds = 0
             }
 
-            // 思考提示已统一移到循环顶部，每 5 秒报一次，这里不再另起一套节奏。
+            // 思考提示已统一移到循环顶部，每轮报一次，这里不再另起一套节奏。
             lastTextLen = textLen
             lastCodeLen = codeLen
-            Thread.sleep(forTimeInterval: 5.0)
+            // 3 秒一轮（原来是 5 秒）：兜底判定要「一轮没长」≈3 秒就收工，
+            // 轮间隔必须跟着缩，否则「3 秒」实际是 5 秒。轮数阈值也按 3 秒重算过。
+            Thread.sleep(forTimeInterval: 3.0)
         }
 
         throw BridgeError.failed("等了 10 分钟仍未等到完整回答（没有结束标记、也没有收尾标志），没有擅自执行截断的脚本，请再试一次。")

@@ -107,6 +107,14 @@ final class BrowserController: NSObject, WKNavigationDelegate, NSWindowDelegate 
 
     // MARK: - 加载
 
+    /// 只把「已加载」标志打回 false，不碰窗口、不碰 WebView。
+    /// 给后台线程用：`loadDeepSeek(force:)` 里有 NSWindow 操作必须回主线程，
+    /// 等它异步执行完再轮询，标志早就被读成上一轮的 true 了 —— 日志里那个
+    /// 「页面重载完成，用时 0.0 秒」就是这么来的，等于根本没等。
+    func markReloading() {
+        isPageLoaded = false
+    }
+
     func loadDeepSeek(force: Bool = false) {
         makeWindowIfNeeded()
         hideCompletely()
@@ -147,29 +155,9 @@ final class BrowserController: NSObject, WKNavigationDelegate, NSWindowDelegate 
         }
     }
 
-    /// 截一张当前页面，给失败诊断包用。必须在主线程调用。
-    ///
-    /// 窗口 alpha = 0 也能截到 —— WKWebView 的 takeSnapshot 走的是渲染树，
-    /// 不是屏幕抓取，所以不需要为了截图把窗口露出来。
-    func snapshotPNG(completion: @escaping (Data?) -> Void) {
-        let work = { [weak self] in
-            guard let self = self, self.webView.bounds.width > 1 else {
-                completion(nil)
-                return
-            }
-            let config = WKSnapshotConfiguration()
-            config.rect = self.webView.bounds
-            self.webView.takeSnapshot(with: config) { image, _ in
-                guard let image = image,
-                      let tiff = image.tiffRepresentation,
-                      let rep = NSBitmapImageRep(data: tiff),
-                      let png = rep.representation(using: .png, properties: [:])
-                else { completion(nil); return }
-                completion(png)
-            }
-        }
-        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
-    }
+    // 这里原来有个 `snapshotPNG`（截当前页面给失败诊断 md 用），2026-10-27 跟着
+    // 「失败不留诊断、日志只看详情」一起删了。真要再截图，用 WKWebView.takeSnapshot，
+    // 注意窗口 alpha=0 也能截到（走渲染树，不是屏幕抓取）。
 
     // MARK: - 执行 JS
 

@@ -82,11 +82,11 @@ final class AppState: ObservableObject {
     @Published var diagnostics = ""
     @Published var autoSend = true
     @Published var progressLines: [String] = []
-    /// 一进失败态就自动留一份日志（写 App 支持目录，不打扰用户）。
+    /// 失败时只在「详情」里补一行日志，**不写文件、不截图、不改外观**（用户 2026-10-27 定）。
     /// 挂 didSet 而不是在每个失败分支里各写一次 —— 失败出口有六七个，漏一个就没日志。
     @Published var docx: DocxState = .idle {
         didSet {
-            if case .failed = docx { saveDiagnosticLog() }
+            if case .failed(let why) = docx { log("✗ 生成失败：\(why)") }
         }
     }
     /// 用户点了「中止」
@@ -98,8 +98,19 @@ final class AppState: ObservableObject {
     /// 第一次检测有结论之前不显示「登录」按钮 —— 否则一开 App 就闪一下"未登录"，很吓人
     @Published var loginSettled = false
 
-    /// 最近一次失败原因
-    @Published var lastFailure = ""
+    /// 双绿灯（已登录 + 深度思考/智能搜索已激活）之后 0.5 秒才放出「登出 DeepSeek」按钮。
+    /// 延迟是为了不让「登录成功」和「冒出新按钮」发生在同一瞬间 —— 那样看着像闪了一下。
+    @Published var logoutReady = false
+    private var logoutWorkItem: DispatchWorkItem?
+    /// 兜底：已登录但模式迟迟没激活（网页改版、检测一直失败）时，到点也把按钮放出来。
+    /// 没有这个兜底，用户就没有任何登出入口 —— 底部那个「⋯」菜单已经删了。
+    private var logoutFallbackItem: DispatchWorkItem?
+    /// 双绿灯达成到按钮出现之间等多久（用户 2026-10-27 定的 0.5 秒）
+    private static let logoutDelay: TimeInterval = 0.5
+    /// 只有已登录、模式还没激活时，最多等这么久就把按钮放出来
+    private static let logoutFallbackDelay: TimeInterval = 8
+    /// 按钮淡入时长
+    private static let logoutFade: TimeInterval = 0.5
 
     /// 深度思考 / 智能搜索 的激活状态（在登录流程里探测，供 idleStatus 显示）
     @Published var deepThinkOn = false
@@ -322,6 +333,9 @@ final class AppState: ObservableObject {
                     self.modeRetryWorkItem = nil
                 }
                 self.reactToLoginState()
+                // 每轮探针都顺手校准一次「登出 DeepSeek」按钮的放行状态：
+                // 退出登录时它要立刻消失。幂等，不会重复计时。
+                self.syncLogoutGate()
             }
         }
     }
@@ -371,6 +385,59 @@ final class AppState: ObservableObject {
         }
         modeRetryWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: item)
+    }
+
+    // MARK: - 「登出 DeepSeek」按钮的放行
+
+    /// 双绿灯（已登录 + 模式已激活）都亮，才允许出现登出按钮。
+    private var logoutAllowed: Bool {
+        loginSettled && login.isLoggedIn && modesChecked
+    }
+
+    /// 双绿灯一变，就重新安排「登出 DeepSeek」按钮的出现时机。**幂等**，每轮登录探针都能调：
+    /// 已经在等那 0.5 秒的不会重新计时，已经亮了的不会重复亮。
+    private func syncLogoutGate() {
+        let loggedIn = loginSettled && login.isLoggedIn
+        guard loggedIn else {
+            logoutWorkItem?.cancel()
+            logoutWorkItem = nil
+            logoutFallbackItem?.cancel()
+            logoutFallbackItem = nil
+            if logoutReady {
+                // 退出登录：按钮淡出
+                withAnimation(.easeOut(duration: Self.logoutFade)) { logoutReady = false }
+            }
+            return
+        }
+        // 只要登录了就先把兜底计时器挂上 —— 万一模式一直检测不出来，
+        // 到点仍然能给用户一个登出入口（底部那个「⋯」已经删了，没有别的路）。
+        scheduleLogoutFallback()
+        guard logoutAllowed else { return }
+        guard !logoutReady, logoutWorkItem == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.logoutWorkItem = nil
+            guard self.logoutAllowed else { return }
+            // 渐显：按钮从无到有，0.5 秒淡入
+            withAnimation(.easeOut(duration: Self.logoutFade)) { self.logoutReady = true }
+        }
+        logoutWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.logoutDelay, execute: item)
+    }
+
+    /// 已登录、但双绿灯迟迟不达成时的兜底。
+    /// 只在本次登录会话里挂一次：按钮已经亮了就什么都不做。
+    private func scheduleLogoutFallback() {
+        guard !logoutReady, logoutFallbackItem == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.logoutFallbackItem = nil
+            guard self.loginSettled, self.login.isLoggedIn, !self.logoutReady else { return }
+            self.log("模式检测 \(Int(Self.logoutFallbackDelay)) 秒未完成，「登出」按钮按兜底放出")
+            withAnimation(.easeOut(duration: Self.logoutFade)) { self.logoutReady = true }
+        }
+        logoutFallbackItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.logoutFallbackDelay, execute: item)
     }
 
     /// 登录成功后，确保深度思考 + 智能搜索都已激活。
@@ -450,6 +517,8 @@ final class AppState: ObservableObject {
                     }
                     print("[DEBUG] 开关尚未全部就绪，将在下一次登录探针时重试")
                 }
+                // 模式一就绪，双绿灯达成 —— 立刻校准「登出」按钮的放行（0.5 秒后淡入）
+                self.syncLogoutGate()
             }
         }
     }
@@ -558,13 +627,13 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// 右下角「⋯」里的退出登录 —— 现在由主界面弹自定义确认框（和退出 App 确认框
-    /// 一样：主界面绝对居中、整框玻璃、按钮玻璃），不再用 NSAlert 系统弹窗。
-    /// 确认后走下面的 logoutDeepSeek；生成进行中时确认框里的退出按钮是禁用的。
+    /// 「登出 DeepSeek」按钮（标题行末尾那个胶囊）的确认框 —— 和退出 App 确认框一样：
+    /// 主界面绝对居中、整框玻璃、按钮玻璃，不用 NSAlert 系统弹窗。
+    /// 确认后走下面的 logoutDeepSeek；生成进行中时确认框里的登出按钮是禁用的。
 
     /// 真的清登录态。清完直接把登录窗口弹出来，用户不用再找按钮。
     func logoutDeepSeek() {
-        say("正在退出 DeepSeek 账号…", detail: "清掉本机保存的登录信息", running: true)
+        say("正在登出 DeepSeek 账号…", detail: "清掉本机保存的登录信息", running: true)
         // 先停掉探针和倒计时，免得旧状态干扰新登录流程
         timer?.invalidate()
         timer = nil
@@ -573,6 +642,12 @@ final class AppState: ObservableObject {
         loginCountdown = 0
         awaitingLogoutConfirmation = true
         browserShownForLogin = false
+        // 「登出 DeepSeek」按钮立刻收掉，等重新登录后再走 syncLogoutGate 淡入
+        logoutWorkItem?.cancel()
+        logoutWorkItem = nil
+        logoutFallbackItem?.cancel()
+        logoutFallbackItem = nil
+        logoutReady = false
         modesChecked = false
         modesCheckInFlight = false
         modesRetryAllowed = false
@@ -594,7 +669,7 @@ final class AppState: ObservableObject {
             self.login = LoginStatus(kind: .unknown)
             self.loginSettled = false
             self.pollingStopped = false
-            self.say("已退出 DeepSeek 账号", detail: "请在打开的窗口里重新登录",
+            self.say("已登出 DeepSeek 账号", detail: "请在打开的窗口里重新登录",
                     running: false, tone: .ok)
             self.openDeepSeek()
             // 清完数据后探针被停了，必须重新启动，否则登录成功没人发现
@@ -783,7 +858,25 @@ final class AppState: ObservableObject {
     // MARK: - 内置 Python 执行
 
     @Published var scriptOutput = ""
-    @Published var showOutputPanel = false
+
+    /// 运行日志面板（成功、失败都从这里看，见 `LogPanel`）。
+    /// 2026-10-27 用户定：失败时**不换按钮、不弹面板、不导 md/截图**，
+    /// 一律只在这个面板里看 —— 所以 `progressLines` 是唯一的日志出口。
+    @Published var showLog = false
+
+    func openLog() {
+        guard !showLog else { return }
+        withAnimation(.easeOut(duration: 0.18)) { showLog = true }
+    }
+
+    func closeLog() {
+        guard showLog else { return }
+        withAnimation(.easeOut(duration: 0.18)) { showLog = false }
+    }
+
+    func toggleLog() {
+        if showLog { closeLog() } else { openLog() }
+    }
 
     var pythonReady: Bool { PythonRunner.isAvailable }
 
@@ -807,7 +900,6 @@ final class AppState: ObservableObject {
         }
         isRunning = true
         scriptOutput = ""
-        lastFailure = ""
         docx = .building
         say("正在生成 Word 讲义…", detail: "大约需要几十秒，请稍等", running: true)
 
@@ -824,11 +916,10 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 self.isRunning = false
                 if let failure = failure {
-                    self.lastFailure = failure
                     self.docx = .failed(failure)
                     self.scriptOutput = failure
                     self.restoreHeldFiles()
-                    self.say("生成失败了", detail: "可以点下面「查看详情」看原因，或再试一次",
+                    self.say("生成失败了", detail: "点 Word 卡右上角「详情」可以看这次运行的日志，或再试一次",
                              running: false, tone: .error)
                     return
                 }
@@ -843,7 +934,6 @@ final class AppState: ObservableObject {
                     return
                 }
                 if result.timedOut {
-                    self.lastFailure = "执行超时（4 分钟）"
                     self.docx = .failed("执行超时（4 分钟）")
                     self.restoreHeldFiles()
                     self.say("生成超时了", detail: "脚本跑了 4 分钟还没结束，已强制停下",
@@ -852,16 +942,14 @@ final class AppState: ObservableObject {
                 }
                 if result.exitCode != 0 {
                     let msg = "脚本报错（退出码 \(result.exitCode)）"
-                    self.lastFailure = msg
                     self.docx = .failed(msg)
                     self.restoreHeldFiles()
-                    self.say("生成失败了", detail: "可以点下面「查看详情」看原因，或再试一次",
+                    self.say("生成失败了", detail: "点 Word 卡右上角「详情」可以看这次运行的日志，或再试一次",
                              running: false, tone: .error)
                     return
                 }
                 let docs = result.producedFiles.filter { $0.pathExtension.lowercased() == "docx" }
                 guard !docs.isEmpty else {
-                    self.lastFailure = "脚本跑完了，但没有产出 docx"
                     self.docx = .failed("没有产出 docx")
                     self.restoreHeldFiles()
                     self.say("生成失败了", detail: "脚本跑完了，但没有产出 Word 文件",
@@ -938,139 +1026,18 @@ final class AppState: ObservableObject {
         return "讲义-\(df.string(from: Date())).docx"
     }
 
-    // MARK: - 失败诊断（Markdown 报告 + 页面截图）
-
-    private static func timeStamp() -> String {
-        let df = DateFormatter()
-        df.dateFormat = "yyyyMMdd-HHmmss"
-        return df.string(from: Date())
-    }
-
-    /// 报告正文。用 Markdown 而不是 json/txt：能放标题、表格、代码块，
-    /// 还能直接 `![]()` 引一张截图，老师用「预览」打开就能看，发给开发也好读。
-    private func diagnosticMarkdown(stamp: String, shotName: String?) -> String {
-        var md: [String] = []
-        md.append("# 讲义生成 · 失败诊断报告")
-        md.append("")
-        md.append("| 项目 | 内容 |")
-        md.append("| --- | --- |")
-        md.append("| 生成时间 | \(stamp) |")
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
-        md.append("| App 版本 | \(version) |")
-        md.append("| 系统版本 | \(ProcessInfo.processInfo.operatingSystemVersionString) |")
-        md.append("| 页面地址 | \(browser.currentURL.isEmpty ? "（无）" : browser.currentURL) |")
-        md.append("")
-
-        if let shot = shotName {
-            md.append("## 失败时的页面")
-            md.append("")
-            md.append("![页面截图](\(shot))")
-            md.append("")
-        } else {
-            md.append("> 页面截图没有取到（页面可能还没加载完，或者窗口还没建出来）。")
-            md.append("")
-        }
-
-        md.append("## 失败原因")
-        md.append("")
-        md.append(lastFailure.isEmpty ? (progress.detail.isEmpty ? "（没有记录）" : progress.detail)
-                                      : lastFailure)
-        md.append("")
-        md.append("## 界面最后一次提示")
-        md.append("")
-        md.append("\(progress.title) ｜ \(progress.detail)")
-        md.append("")
-        md.append("## Python 输出")
-        md.append("")
-        md.append("```text")
-        md.append(scriptOutput.isEmpty ? "（没有输出）" : scriptOutput)
-        md.append("```")
-        md.append("")
-        md.append("## 流程记录")
-        md.append("")
-        md.append("```text")
-        md.append(progressLines.isEmpty ? "（无）" : progressLines.joined(separator: "\n"))
-        md.append("```")
-        md.append("")
-        return md.joined(separator: "\n")
-    }
-
-    /// 失败时自动留档：静默写进 App 支持目录，桌面上不弹任何东西。
-    /// 用户的原话是「失败就失败吧，只要存日志即可」——所以默认不打扰，
-    /// 需要发给开发者时再点「导出诊断文件」。
-    func saveDiagnosticLog() {
-        let stamp = AppState.timeStamp()
-        let finish: () -> Void = { [weak self] in
-            guard let self = self else { return }
-            self.browser.snapshotPNG { png in
-                let fm = FileManager.default
-                guard let base = fm.urls(for: .applicationSupportDirectory,
-                                         in: .userDomainMask).first else { return }
-                let dir = base.appendingPathComponent("讲义生成/日志", isDirectory: true)
-                try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-                let shotName = "失败-\(stamp)-页面.png"
-                if let png = png {
-                    try? png.write(to: dir.appendingPathComponent(shotName))
-                }
-                let md = self.diagnosticMarkdown(stamp: stamp,
-                                                 shotName: png != nil ? shotName : nil)
-                let out = dir.appendingPathComponent("失败-\(stamp).md")
-                try? md.write(to: out, atomically: true, encoding: .utf8)
-                self.log("失败日志已存：\(out.path)")
-                AppState.pruneLogs(in: dir, keep: 30)
-            }
-        }
-        if Thread.isMainThread { finish() } else { DispatchQueue.main.async(execute: finish) }
-    }
-
-    /// 只留最近 N 份，免得日志目录无限长大
-    private static func pruneLogs(in dir: URL, keep: Int) {
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-        else { return }
-        let reports = files.filter { $0.pathExtension == "md" }
-            .sorted { $0.lastPathComponent > $1.lastPathComponent }
-        guard reports.count > keep else { return }
-        for old in reports.dropFirst(keep) {
-            let stem = old.deletingPathExtension().lastPathComponent
-            try? fm.removeItem(at: old)
-            let png = dir.appendingPathComponent("\(stem)-页面.png")
-            try? fm.removeItem(at: png)
-        }
-    }
-
-    /// 点「导出诊断文件」：在桌面生成一个文件夹，里面是 md 报告 + 截图，直接发人。
-    func exportDiagnostics() {
-        let stamp = AppState.timeStamp()
-        browser.snapshotPNG { [weak self] png in
-            guard let self = self else { return }
-            let fm = FileManager.default
-            guard let desktop = fm.urls(for: .desktopDirectory,
-                                        in: .userDomainMask).first else {
-                self.say("导出失败", detail: "找不到桌面目录", running: false, tone: .error)
-                return
-            }
-            let dir = desktop.appendingPathComponent("讲义生成-失败诊断-\(stamp)",
-                                                     isDirectory: true)
-            do {
-                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-                let shotName = "页面截图.png"
-                if let png = png {
-                    try png.write(to: dir.appendingPathComponent(shotName))
-                }
-                let md = self.diagnosticMarkdown(stamp: stamp,
-                                                 shotName: png != nil ? shotName : nil)
-                let out = dir.appendingPathComponent("诊断报告.md")
-                try md.write(to: out, atomically: true, encoding: .utf8)
-                self.say("诊断报告已导出到桌面 ✓", detail: out.lastPathComponent,
-                         running: false, tone: .ok)
-                self.revealInFinder(out)
-            } catch {
-                self.say("导出失败", detail: error.localizedDescription,
-                         running: false, tone: .error)
-            }
-        }
-    }
+    // MARK: - 失败诊断：已删除（2026-10-27）
+    //
+    // 这里原来有 `timeStamp` / `diagnosticMarkdown` / `saveDiagnosticLog` / `pruneLogs` /
+    // `exportDiagnostics` 五块，外加 BrowserController 里的 `snapshotPNG`，一共约 150 行。
+    // 作用是「失败时写一份 md + 一张页面截图，用户手动发给我」。
+    //
+    // 用户 2026-10-27 定：**失败不要改变任何外观，日志一律看「详情」**。
+    // 于是这条链路整个撤掉：失败只做两件事 ——
+    //   1. `docx = .failed(原因)`，Word 卡那一行说明改字，别的什么都不动；
+    //   2. `docx` 的 didSet 往 `progressLines` 补一行 `✗ 生成失败：…`，进「详情」面板。
+    // 别再把它加回来：截图要等主线程、写文件要挑目录、还要定期清理，
+    // 换来的只是一份没人看的 md，而「详情」里日志本来就有。
 
     // MARK: - 开发用：登录流程自检
 
@@ -1170,9 +1137,8 @@ final class AppState: ObservableObject {
             isRunning = false
             progress = ProgressInfo(
                 title: "生成失败了",
-                detail: "可以点下面「查看详情」看原因，或再试一次",
+                detail: "点 Word 卡右上角「详情」可以看这次运行的日志，或再试一次",
                 fraction: 0, running: false, tone: .error)
-            lastFailure = "脚本报错（退出码 1）"
             scriptOutput = "Traceback (most recent call last):\n  File \"生成讲义.py\", line 42\nKeyError: 'style'"
             docx = .failed("脚本报错（退出码 1）")
         } else {
@@ -1183,5 +1149,64 @@ final class AppState: ObservableObject {
                 fraction: 1, running: false, tone: .ok)
             docx = .ready(URL(fileURLWithPath: "/tmp/讲义.docx"))
         }
+    }
+
+    /// 开发用：`--logdemo` / `--logdemo-closed` / `--faildemo`。
+    /// 造一份**像真的跑完一轮**的状态：成品已出、日志有内容、可下载。
+    /// 不用真跑三分钟，就能看「详情」面板的版式，以及它有没有压住 Word 卡上的按钮。
+    /// 只为截图检查视觉，不碰网络、不跑脚本，正式使用不会触发。
+    func applyLogDemo(openPanel: Bool, failed: Bool = false) {
+        // 关键顺序：先把轮询停掉，否则 `startPolling()` 已经派出去的那一次探针
+        // 会在我们设完状态之后落地，把 login 改成「未登录」—— 界面上就会出现
+        // 「登录」和「登出」两个按钮并排的怪画面。停掉之后再补一次延时重设，兜住那一次。
+        pollingStopped = true
+        let apply: () -> Void = { [weak self] in
+            guard let self = self else { return }
+            self.login = LoginStatus(kind: .loggedIn)
+            self.loginSettled = true
+            self.logoutReady = true
+            self.isRunning = false
+            if failed {
+                // 失败态：**只改这一行字**，按钮还是同一个、只是禁用（2026-10-27 用户要求）
+                self.progress = ProgressInfo(
+                    title: "生成失败了",
+                    detail: "点 Word 卡右上角「详情」可以看这次运行的日志，或再试一次",
+                    fraction: 0, running: false, tone: .error)
+                self.docx = .failed("脚本报错（退出码 1）")
+                self.scriptOutput = "Traceback (most recent call last):\n  File \"生成讲义.py\", line 42\nKeyError: 'style'"
+            } else {
+                self.progress = ProgressInfo(
+                    title: "讲义生成好了 ✓",
+                    detail: "在下面点「下载 Word 讲义」保存到电脑里",
+                    fraction: 1, running: false, tone: .ok)
+                // 拿包内模板当「刚生成的成品」，KB 数是真文件大小，卡片上的文案不会露馅
+                self.docx = .ready(AppState.bundledTemplate ?? URL(fileURLWithPath: "/tmp/讲义.docx"))
+                self.scriptOutput = ""
+            }
+        }
+        apply()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: apply)
+
+        // 照抄一次真实运行的日志形态（根地址重载 → 探针 → 上传 → 发送 → 分段 → 收尾 → 抓脚本）
+        progressLines = [
+            "页面重载：2.4 秒",
+            "等输入框出现：0.4 秒",
+            "页面：{\"textarea\":true,\"fileInputs\":1,\"sendLabel\":\"\",\"deepThink\":true,\"smartSearch\":true}",
+            "载入 讲义制作规则.md（21 KB）",
+            "载入 标准模式讲义.docx（32 KB）",
+            "载入 2026届高三英语上学期期中试卷.docx（48 KB）",
+            "载入 2026届高三英语上学期期中试卷-参考答案.docx（36 KB）",
+            "注入：INPUT:4/0",
+            "4 个附件已就位",
+            "提示词已填入并回读一致（1043 字）",
+            "发送结果：ENTER",
+            "代码出现收尾标志：末尾有 .save( 调用",
+            "第 1 段写完了，正在请 AI 接着写第 2 段…",
+            "继续生效（约 4 秒后开始出字，涨了 2310 字）",
+            "内容 3 秒未变且有收尾标志，按完成处理",
+            "抓到 1 个代码块，原文总长 14218 字符",
+            "脚本 14219 字符，直接执行",
+        ]
+        showLog = openPanel
     }
 }
