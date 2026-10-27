@@ -1042,7 +1042,7 @@ struct WordCard: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .trialGlassCard(cornerRadius: 16, shadowOpacity: active ? 0.08 : 0.02, shadowRadius: active ? 12 : 5)
-        // 卡片 hover 叠层盖在整个卡片上面，包括里面的下载/导出/详情按钮。
+        // 卡片 hover 叠层盖在整个卡片上面，包括里面的下载按钮和标题行「详情」按钮。
         // 不加 allowsHitTesting(false)，即使填充透明也会挡住鼠标，和 2026-10-26 退出按钮
         // 那个 bug 同一个根源（见 AGENTS.md 按钮教训）。加在叠层内容上，不是整个卡片上，
         // 否则卡片里的按钮全被禁点；hover 还是靠卡片自己的 onHover，不受影响。
