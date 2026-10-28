@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import CryptoKit
 
 struct LoginStatus {
     enum Kind {
@@ -736,6 +737,97 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - 跨框查重（用户 2026-10-29 第 11 轮）
+
+    /// 只收这几种。`NSOpenPanel` 那边有 `allowedContentTypes` 挡着，
+    /// 但拖放绕得过，所以 `accept` 里还要自己挡一次。
+    static let allowedExtensions: Set<String> = ["doc", "docx"]
+
+    /// 内容指纹：字节数 + 头 128KB + 尾 128KB 的 SHA-256。
+    ///
+    /// 讲义的 doc/docx 都很小（几十 KB），本来整份读进内存也没多慢 ——
+    /// 这里仍然只读头尾，是为了不让「把整个文件读进内存」变成习惯。
+    /// 文件小于 256KB 时头尾重叠，等于读全文，反而更准。
+    static func fingerprint(ofFileAt url: URL) -> String? {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        let size = (try? fh.seekToEnd()) ?? 0
+        let chunk: UInt64 = 128 * 1024
+        var sample = Data()
+        try? fh.seek(toOffset: 0)
+        sample.append((try? fh.read(upToCount: Int(chunk))) ?? Data())
+        if size > chunk * 2 {
+            try? fh.seek(toOffset: size - chunk)
+            sample.append((try? fh.read(upToCount: Int(chunk))) ?? Data())
+        }
+        var hasher = SHA256()
+        hasher.update(data: sample)
+        hasher.update(data: Data("\(size)".utf8))
+        let hex = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return "\(size)-\(hex)"
+    }
+
+    /// 两个 URL 是不是同一份文件。
+    /// 先比路径（同一个文件被选进两个框），再比内容（复制一份、改个名字再放进来）。
+    /// 读不出内容时一律当作「不同」—— 宁可可放过去，也不要误杀。
+    static func sameFile(_ a: URL, _ b: URL) -> Bool {
+        if a.standardizedFileURL == b.standardizedFileURL { return true }
+        guard let fa = fingerprint(ofFileAt: a), let fb = fingerprint(ofFileAt: b) else { return false }
+        return fa == fb
+    }
+
+    // MARK: - 冒泡提示（落在被操作的那个框上）
+
+    /// 一句话提示。**必须带上 slot** —— 提示要落在被操作的那个框里，
+    /// 而不是窗口顶部、也不是另一个框（用户 2026-10-29 特别交代）。
+    @Published var toast: String?
+    @Published var toastSlot: Slot?
+    private var toastItem: DispatchWorkItem?
+
+    func showToast(_ text: String, on slot: Slot, seconds: TimeInterval = 2.7) {
+        toastItem?.cancel()
+        withAnimation(.easeOut(duration: 0.15)) {
+            toast = text
+            toastSlot = slot
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                self.toast = nil
+                self.toastSlot = nil
+            }
+        }
+        toastItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    func dismissToast() {
+        toastItem?.cancel()
+        withAnimation(.easeOut(duration: 0.18)) {
+            toast = nil
+            toastSlot = nil
+        }
+    }
+
+    /// 把拖进来的 `NSItemProvider` 解析成文件 URL（保持拖进来的顺序）。
+    /// 全部回来之后再回调，这样「拖了 3 个」只弹一条提示，而不是三条。
+    static func resolveFileURLs(from providers: [NSItemProvider],
+                               completion: @escaping ([URL]) -> Void) {
+        guard !providers.isEmpty else { completion([]); return }
+        var slots = [URL?](repeating: nil, count: providers.count)
+        let group = DispatchGroup()
+        for (i, provider) in providers.enumerated() {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                slots[i] = url
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) {
+            completion(slots.compactMap { $0 })
+        }
+    }
+
     // MARK: - 文件选择（带目录记忆）
 
     private static func dirKey(_ slot: Slot) -> String {
@@ -790,7 +882,28 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func accept(_ url: URL, for slot: Slot) {
+    /// 把一个文件放进某个框。**被拒返回 false**，并冒泡说明原因。
+    ///
+    /// 两个入口共用：点框选文件、把文件拖进来。所以白名单必须在这里挡一次 ——
+    /// `NSOpenPanel` 有 `allowedContentTypes`，拖放可绕不过去。
+    @discardableResult
+    func accept(_ url: URL, for slot: Slot) -> Bool {
+        // ① 类型：只收 Word
+        guard Self.allowedExtensions.contains(url.pathExtension.lowercased()) else {
+            showToast("只收 Word 文档（.doc / .docx）", on: slot)
+            return false
+        }
+        // ② 跨框查重（用户 2026-10-29 第 11 轮）：
+        //    两个框放同一份文件，生成出来的讲义一定是错的 —— 最常见的错法
+        //    就是把答案当考卷传、或者反过来。宁可在这一步拦下来。
+        if let other = (slot == .exam ? answerURL : examURL), Self.sameFile(url, other) {
+            showToast(slot == .exam
+                      ? "这份和「上传答案」里的是同一个文件，检查一下是不是放反了"
+                      : "这份和「上传考卷」里的是同一个文件，检查一下是不是放反了",
+                      on: slot)
+            return false
+        }
+
         switch slot {
         case .exam: examURL = url
         case .answer: answerURL = url
@@ -800,6 +913,17 @@ final class AppState: ObservableObject {
         // 之前那种"已选择 xxx.docx"只反映最后一次操作，看起来像另一个文件丢了。
         // 上一次成功提示也顺便清掉，让状态框回到"还差哪一步"。
         if !isRunning && progress.tone == .ok { progress = ProgressInfo() }
+        return true
+    }
+
+    /// 拖进来的一批文件（用户 2026-10-29 第 11 轮）。
+    /// **一个框只放一个文件**，所以只取第一个；多出来的忽略，并说一句用了哪个。
+    func acceptDropped(_ urls: [URL], for slot: Slot) {
+        guard let first = urls.first else { return }
+        let took = accept(first, for: slot)
+        if took && urls.count > 1 {
+            showToast("一个框只放一个文件，只用了 \(first.lastPathComponent)", on: slot)
+        }
     }
 
     func clearFile(for slot: Slot) {

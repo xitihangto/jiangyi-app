@@ -44,8 +44,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleIdentifier</key><string>com.workbuddy.lecturegen</string>
 	<key>CFBundleExecutable</key><string>LectureGen</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>0.29</string>
-	<key>CFBundleVersion</key><string>29</string>
+	<key>CFBundleShortVersionString</key><string>0.30</string>
+	<key>CFBundleVersion</key><string>30</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>CFBundleDevelopmentRegion</key><string>zh-Hans</string>

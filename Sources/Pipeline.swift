@@ -122,32 +122,49 @@ extension AppState {
         ]
         var prompt = AppState.promptText
 
-        // 0. 每次运行都重载根地址，保证是空白新对话。
+        // 0. 开新对话。内置浏览器走三档，从最省事往下退：
         //
-        // 以前是「先点页面上的『开启新对话』按钮，点不到才兜底重载」。这套在作文版上跑了
-        // v0.12 到 v0.20 整整九个版本，那个按钮**一次都没点中过**（每轮日志都是 NOT_FOUND），
-        // 等于每轮白等两三次 JS 往返，还要维护 30 行兜底代码。
-        // 根地址 https://chat.deepseek.com/ 后面不带任何会话 id，重载出来必然是空白对话，
-        // 这条路反而更硬：不依赖 DOM、不怕改版。代价是每次多 2~4 秒，相对整轮几分钟不算什么。
+        //   ① 页面已经停在根地址 → 什么都不做。App 第一次打开、刚登录、上一轮没发出去，
+        //      都落在这里 —— 本来就是空对话，按 ⌘J 或重载都是多余的。
+        //   ② 停在会话页（/a/chat/s/<id>）→ 按 ⌘J。它只切 SPA 里的会话，不重载页面，
+        //      比 reload 快 2~4 秒。走真实 NSEvent 注入，和「继续生成」是同一条路
+        //      （见 BrowserController.sendCommandKey）。
+        //   ③ ⌘J 按了没反应 / 页面没加载完 → 重载根地址。
+        //
+        // 以前这里是每次无条件重载根地址，因为「点页面上的『开启新对话』按钮」从
+        // 作文版 v0.12 到 v0.20 一次都没点中过（每轮日志都是 NOT_FOUND）。
+        // 重载那条路留着当兜底：绝不能在旧对话里继续提问，否则上一轮上下文会串味。
         say("正在准备新对话…", detail: "重置页面中，稍等几秒", running: true)
         if engine == .webview {
-            // loadDeepSeek 里有 NSWindow 操作，必须回主线程。但它是异步的，
-            // 等它跑起来再轮询标志的话，读到的是上一轮的 true —— 循环立刻退出，
-            // 日志里就是「用时 0.0 秒」，等于没等。所以先把标志同步打回 false 再派发。
-            browser.markReloading()
-            DispatchQueue.main.async { [weak self] in self?.browser.loadDeepSeek(force: true) }
-            var waited = 0.0
-            while !browser.isPageLoaded && waited < 25 {
-                try checkStop()
-                Thread.sleep(forTimeInterval: 0.25)
-                waited += 0.25
-            }
-            log("页面重载：\(String(format: "%.1f", waited)) 秒")
-            if !browser.isPageLoaded {
-                log("⚠️ 25 秒内没等到页面加载完成，继续尝试（后面探针会暴露真实状态）")
+            switch browser.newChatByShortcut() {
+            case .alreadyFresh:
+                // App 刚启动、刚登录、上一轮没发出去 —— 页面就停在根地址，本来就是空对话。
+                log("页面已在根地址，本来就是新对话，跳过重置")
+            case .shortcut(let seconds):
+                log("⌘J 开新对话：\(String(format: "%.1f", seconds)) 秒")
+                // 地址栏变了不代表 DOM 已经换完（SPA 切会话是异步渲染）。
+                // 稍等一下再往里塞附件，免得塞进上一轮那个还没拆掉的输入框。
+                Thread.sleep(forTimeInterval: 1.2)
+            case .failed:
+                log("⌘J 没换掉会话，回退重载根地址")
+                // loadDeepSeek 里有 NSWindow 操作，必须回主线程。但它是异步的，
+                // 等它跑起来再轮询标志的话，读到的是上一轮的 true —— 循环立刻退出，
+                // 日志里就是「用时 0.0 秒」，等于没等。所以先把标志同步打回 false 再派发。
+                browser.markReloading()
+                DispatchQueue.main.async { [weak self] in self?.browser.loadDeepSeek(force: true) }
+                var waited = 0.0
+                while !browser.isPageLoaded && waited < 25 {
+                    try checkStop()
+                    Thread.sleep(forTimeInterval: 0.25)
+                    waited += 0.25
+                }
+                log("页面重载：\(String(format: "%.1f", waited)) 秒")
+                if !browser.isPageLoaded {
+                    log("⚠️ 25 秒内没等到页面加载完成，继续尝试（后面探针会暴露真实状态）")
+                }
             }
         } else {
-            // Safari 模式没法从 App 里刷新页面，只能让它重新打开一次根地址（等同于新对话）
+            // Safari 模式没法从 App 里注入键盘事件（跨进程），只能让它重新打开一次根地址
             SafariBridge.openDeepSeek()
             Thread.sleep(forTimeInterval: 3.0)
             log("已在 Safari 里重新打开根地址")

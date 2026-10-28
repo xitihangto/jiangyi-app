@@ -86,6 +86,60 @@ struct LectureApp: App {
             exit(0)
         }
 
+        // 自检：两框之间的查重（--dupetest，用户 2026-10-29 第 11 轮）
+        // 要验证四件事：
+        //   ① 同一份文件换个名字，指纹一样（按内容判，不按文件名）
+        //   ② 不同内容指纹不一样
+        //   ③ 考卷框放过的文件，再往答案框放 —— **必须被拒**，而且提示落在答案框上
+        //   ④ 不重复的文件照常收下
+        if CommandLine.arguments.contains("--dupetest") {
+            let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("dupe-test-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+
+            func write(_ body: String, to name: String) -> URL {
+                let url = dir.appendingPathComponent(name)
+                try? Data(body.utf8).write(to: url)
+                return url
+            }
+
+            let a = write("考卷正文……", to: "考卷.docx")
+            let b = write("考卷正文……", to: "考卷-副本.docx")     // 同内容、不同名
+            let c = write("答案正文……", to: "答案.docx")          // 不同内容
+            let bad = write("考卷正文……", to: "考卷.pdf")         // 类型不在白名单
+
+            let app = AppState()
+            let r1 = app.accept(a, for: .exam)            // 应 true
+            let r2 = app.accept(b, for: .answer)          // 应 false（和考卷框里那份同内容）
+            let dupToast = app.toast
+            let dupSlot = app.toastSlot
+            let answerEmpty = app.answerURL == nil        // 被拒之后答案框必须还是空的
+            let r3 = app.accept(c, for: .answer)          // 应 true
+            let r4 = app.accept(bad, for: .exam)          // 应 false（类型不对）
+            let typeToast = app.toast
+
+            var lines: [String] = []
+            lines.append("指纹 a == b（内容同、名字不同）：\(AppState.sameFile(a, b))")
+            lines.append("指纹 a != c（内容不同）：        \(!AppState.sameFile(a, c))")
+            lines.append("考卷框放 a       → \(r1)（应 true）")
+            lines.append("答案框放 b(重复) → \(r2)（应 false）")
+            lines.append("    提示：\(dupToast ?? "无")")
+            lines.append("    落在：\(dupSlot.map { $0 == .exam ? "考卷框" : "答案框" } ?? "无")（应为答案框）")
+            lines.append("    答案框还是空的：\(answerEmpty)")
+            lines.append("答案框放 c       → \(r3)（应 true）")
+            lines.append("考卷框放 .pdf    → \(r4)（应 false）")
+            lines.append("    提示：\(typeToast ?? "无")")
+            FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
+
+            let ok = AppState.sameFile(a, b)
+                && !AppState.sameFile(a, c)
+                && r1 && !r2 && answerEmpty && r3 && !r4
+                && dupSlot == .answer
+                && (dupToast ?? "").contains("放反")
+            exit(ok ? 0 : 1)
+        }
+
         // 脚本执行自检：--runpython /path/to/script.py
         if let idx = CommandLine.arguments.firstIndex(of: "--runpython"),
            idx + 1 < CommandLine.arguments.count {
@@ -699,6 +753,8 @@ struct UploadCard: View {
     /// 整张上传卡的 hover：只在卡片上叠一层浅蓝提亮，不动玻璃本身，不放大不提亮，
     /// 避免退出/取消按钮那次的闪黑闪白；生成进行中卡片被禁用时不响应 hover。
     @State private var cardHover = false
+    /// 有文件正被拖到这张卡上方（用户 2026-10-29 第 11 轮加拖放）
+    @State private var dropTargeted = false
 
     private var url: URL? {
         slot == .exam ? state.examURL : state.answerURL
@@ -751,9 +807,29 @@ struct UploadCard: View {
                 .transition(.scale.combined(with: .opacity))
             }
         }
+        // 拖放（用户 2026-10-29 第 11 轮）：一个框只放一个文件，只取第一个。
+        // 和点框选文件走**同一个** `accept` —— 白名单、跨框查重都在那里。
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            guard !state.isRunning, !providers.isEmpty else { return false }
+            AppState.resolveFileURLs(from: providers) { urls in
+                state.acceptDropped(urls, for: slot)
+            }
+            return true
+        }
         .onHover { cardHover = $0 && !state.isRunning }
         .animation(.easeOut(duration: 0.15), value: cardHover)
+        .animation(.easeOut(duration: 0.15), value: dropTargeted)
         .animation(.easeOut(duration: 0.18), value: active)
+        // 提示落在**本框的下沿**（用户 2026-10-29：注意冒泡位置）：
+        // 只有 toastSlot 是自己的框才显示，两个框不会同时弹；
+        // 贴底部是为了不盖住标题和文件名 —— 卡片只有 ~95pt 高，居中会把标题压掉。
+        .overlay(alignment: .bottom) {
+            if state.toastSlot == slot, let text = state.toast {
+                ToastBar(text: text) { state.dismissToast() }
+                    .padding(.bottom, 6)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+        }
     }
 
     private var content: some View {
@@ -772,14 +848,14 @@ struct UploadCard: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .padding(.horizontal, 26)
-                Text("\(fileSize) KB · 点框里任何地方可以换一个")
+                Text("\(fileSize) KB · 点框更换，或拖入新文件")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             } else {
                 Text(subtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                Text("＊必选，点框里任何地方选择文件")
+                Text("＊必选，点框选择，或把文件拖进来")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.brandPink)
             }
@@ -791,16 +867,49 @@ struct UploadCard: View {
         .trialGlassCard(cornerRadius: 16, shadowOpacity: active ? 0.09 : 0.03, shadowRadius: active ? 14 : 6)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.brandBlue.opacity(cardHover ? 0.04 : 0))
+                .fill(Color.brandBlue.opacity(dropTargeted ? 0.07 : (cardHover ? 0.04 : 0)))
         )
         .overlay(
+            // 有文件时靠上面那条旋转渐变边，没有时靠这条实线；
+            // 拖着文件悬停时这条线变成加粗的蓝色 —— 和「等待放置」的观感对上。
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(active ? 0 : 0.30), lineWidth: 1.2)
+                .strokeBorder(dropTargeted ? Color.brandBlue.opacity(0.75)
+                                           : Color.secondary.opacity(active ? 0 : 0.30),
+                              lineWidth: dropTargeted ? 1.6 : 1.2)
         )
         .overlay(
             RotatingGradientBorder(radius: 16, active: active)
                 .opacity(active ? 1 : 0)
         )
+    }
+}
+
+// MARK: - 框里的一句话提示
+
+/// 被拒时冒个泡（用户 2026-10-29 第 11 轮）。
+/// 位置由调用方决定：`UploadCard` 把它贴在自己下沿，所以提示一定落在**被操作的那个框**上，
+/// 不会跑到窗口顶部、也不会串到另一个框。
+/// 点一下能提前收掉；没人管的话 2.7 秒自己消失（定时器在 `AppState.showToast`）。
+struct ToastBar: View {
+    let text: String
+    let onTap: () -> Void
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(.white)
+            .multilineTextAlignment(.center)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.brandRed.opacity(0.93))
+            )
+            .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+            .padding(.horizontal, 14)
+            .onTapGesture { onTap() }
     }
 }
 

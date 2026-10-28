@@ -1,9 +1,9 @@
 # 讲义生成 App · 交接文档
 
-> 最后更新：2026-10-27 ｜ 当前版本 **v0.29** ｜ 状态：**v0.29 补过期项：README 与 Word 卡注释（见 §5.24）**
+> 最后更新：2026-10-29 ｜ 当前版本 **v0.30** ｜ 状态：**已发布（GitHub Release v0.30）**
 >
 > 📌 **接手先看**：§5.8（浏览器隐形）、§5.9（v0.14 结构）、§5.10（登录检测 / 诊断包）、
-> §5.11（v0.16 的光标 / 状态框 / Finder）、§5.12（v0.17 新功能）、§5.13（v0.19–v0.20）、§5.14（v0.21 GitHub 推送 + CI Release）、§5.15（v0.21 续三处）、§5.16（v0.22 发布三处 + 每次改动必升版必推 tag 规则）、§5.17（v0.23 液态玻璃 + 退出确认按钮改动）、§5.18（v0.24 标题栏隐藏 + 累计改动）、§5.19（v0.25 主页面 hover + 退出登录确认框 + 退出后永不出现倒计时）、§5.20（v0.26 退出按钮 hover 变深 + 内置网页大叉只隐藏 + 模式检测先绿灯后检测）、§5.21（v0.27 重大 bug 修复：退出按钮点不动）、§5.22（2026-10-27 回灌：3 秒判定 / 根地址新对话 / 删诊断 / 删页脚 / 登出按钮）、**§5.23（v0.28 提示词重写 + 规则 md 用户自改）**、§5.24（v0.29 补过期项）、§7 待办（已按用户决定结算）。
+> §5.11（v0.16 的光标 / 状态框 / Finder）、§5.12（v0.17 新功能）、§5.13（v0.19–v0.20）、§5.14（v0.21 GitHub 推送 + CI Release）、§5.15（v0.21 续三处）、§5.16（v0.22 发布三处 + 每次改动必升版必推 tag 规则）、§5.17（v0.23 液态玻璃 + 退出确认按钮改动）、§5.18（v0.24 标题栏隐藏 + 累计改动）、§5.19（v0.25 主页面 hover + 退出登录确认框 + 退出后永不出现倒计时）、§5.20（v0.26 退出按钮 hover 变深 + 内置网页大叉只隐藏 + 模式检测先绿灯后检测）、§5.21（v0.27 重大 bug 修复：退出按钮点不动）、§5.22（2026-10-27 回灌：3 秒判定 / 根地址新对话 / 删诊断 / 删页脚 / 登出按钮）、§5.23（v0.28 提示词重写 + 规则 md 用户自改）**、§5.24（v0.29 补过期项）、§5.25（⌘J 开新对话）、§5.26（v0.30 拖入 + 两框查重）**、§7 待办（已按用户决定结算）。
 >
 > ⚠️ **重要**：v0.20 之前，v0.19 源码改完后并未实际安装过（/Applications 仍是 v0.17，dist 是 v0.18），
 > 所以 v0.20 直接作为基线，不再回头补 v0.19 的安装记录。安装以桌面一键脚本的核对日志为准，见 §2。
@@ -132,7 +132,7 @@ lecture-app/
   │
   ├─ Pipeline.runPipeline()  ← 后台线程，全程 beginActivity 防 App Nap
   │   │
-  │   ├─ 1. Scripts.newChat        点「开启新对话」，清掉上一轮残留
+  │   ├─ 1. 开新对话               根地址就跳过；会话页按 ⌘J；按不动才重载根地址（§5.25）
   │   ├─ 2. Scripts.probeComposer  探针：确认 textarea 和 input[type=file] 在
   │   ├─ 3. 分片灌字节              base64 每片 96000 字符 → window.__wbF
   │   ├─ 4. Scripts.commitFiles    atob → Uint8Array → DataTransfer → input.files
@@ -811,6 +811,138 @@ v0.15 实测全部符合预期。**改登录相关代码后跑这个，比肉眼
   curl -L --fail -o ~/Downloads/LectureGen-v0.29.zip https://github.com/xitihangto/jiangyi-app/releases/download/v0.29/LectureGen-v0.29.zip
   ```
   装新版前先彻底退出旧 App 再跑安装命令，否则 `open` 可能直接激活还在跑的旧进程，看到的仍是旧行为。
+
+---
+
+### 5.25 开新对话改用 ⌘J（2026-10-28，随 v0.30 一起发布）
+
+**背景。** 作文版先做的：DeepSeek 网页版有 `⌘ J` 开新对话的快捷键，用真实 NSEvent 注入就能触发，
+比每轮重载根地址快 2~4 秒。讲义这边顺带同步。
+
+**改了什么。**
+
+- `BrowserController` 新增 `sendCommandKey(_:keyCode:modifiers:)`：`NSEvent.keyEvent` + `window.sendEvent`。
+  带 Command 的 keyDown 在 AppKit 里走 `performKeyEquivalent`，WKWebView 覆写了它并转给页面
+  （网页里 ⌘A/⌘C 能用就是这条路）。实测页面收到 `key=j, code=KeyJ, keyCode=74, metaKey=true, isTrusted=true`。
+- `BrowserController` 新增 `newChatByShortcut()` + 嵌套枚举 `NewChatOutcome`，外加 `currentURLSync`
+  （`webView.url` 只能在主线程取）。
+- `Pipeline` 第 0 步改成三档（**只动 `engine == .webview` 分支**）。
+
+| 页面状态 | 动作 | 日志 |
+| --- | --- | --- |
+| 停在根地址 | 什么都不做 | `页面已在根地址，本来就是新对话，跳过重置` |
+| 停在 `/a/chat/s/<id>` | 按 ⌘J | `⌘J 开新对话：0.4 秒` |
+| 没加载完 / 按了没反应 | 重载根地址 | `⌘J 没换掉会话，回退重载根地址` |
+
+**两个必须记住的点。**
+
+1. **第一档不能省**。App 第一次打开、刚登录、上一轮没发出去，页面都停在根地址 ——
+   本来就是空对话，按 ⌘J 或重载都是脱裤子放屁。用户 2026-10-28 专门指出来的。
+2. **在根地址上按 ⌘J 看不出效果**（本来就是空对话、URL 不带 id、输入框本来就空）。
+   作文版第一轮验证就是在这里判了「❌ 没反应」，差点把这条路毙掉。
+   正确姿势：先发一句话让地址栏变成 `/a/chat/s/<id>`，再按，看 URL 是否变回根地址。
+
+`isPageLoaded == false` 直接判 `.failed`，防止空 URL 被误当成「根地址」。
+`.shortcut` 成功后 `sleep 1.2` 秒 —— 地址栏变了不代表 DOM 已经换完，SPA 切会话是异步渲染的。
+
+**Safari 模式不动**：跨进程注入不了键盘事件，仍然走 `SafariBridge.openDeepSeek()` 重开根地址。
+
+---
+
+### 5.26 v0.30：上传框支持拖入 + 两框之间查重（2026-10-29）
+
+用户 2026-10-29 的要求原话：**「增加拖入功能，不需要粘贴功能，单个框只支持单文件……
+我怕两个文件框会不小心上传一样的试卷（把答案当试卷或反之亦然），所以两框之间要有查重功能，
+但是别生搬硬套，注意冒泡位置等问题，doc 文件都很小，性能优化问题可以不管，文案也顺便修改（俩框都改）」**。
+
+所以这一版**不是**从「试卷识别 / 作文批改」照搬 —— 那两个 App 是「一个框放多个文件」，
+讲义是「一个框放一个文件」，多文件那套（批量建卡片、整批合并、汇总提示）一律没要。
+
+#### 5.26.1 拖入
+
+`UploadCard` 的卡片上挂 `.onDrop(of: [.fileURL], isTargeted: $dropTargeted)`：
+
+```swift
+.onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+    guard !state.isRunning, !providers.isEmpty else { return false }
+    AppState.resolveFileURLs(from: providers) { urls in
+        state.acceptDropped(urls, for: slot)
+    }
+    return true
+}
+```
+
+- `AppState.resolveFileURLs` 用 `DispatchGroup` 收齐所有 `NSItemProvider`（保持拖进来的顺序），
+  全回来才回调 —— 拖 3 个只弹一条提示，不是三条。
+- `acceptDropped`：**只取第一个**，多出来的忽略，并提示「一个框只放一个文件，只用了 xxx.docx」。
+- 拖到框上方时 `dropTargeted` 为真：底色叠一层 `brandBlue 0.07`、边框变成加粗的蓝线（1.6pt）。
+  有文件时本来就靠 `RotatingGradientBorder`，拖入时那条蓝线压在它上面，两者不冲突。
+- **没有做粘贴**。用户明确说不需要，`AppState` 里也没有 `pasteFromClipboard`，
+  别看到另两个 App 有就顺手加。
+
+#### 5.26.2 两框查重（`AppState.sameFile`）
+
+**这是这一版的重点，也是最容易做错的地方**：判重必须跨框，不是框内。
+
+判在 `accept(_:for:)` 里 —— 点框选文件和拖入共用这一个入口，所以两种放法都拦得住。
+
+```swift
+if let other = (slot == .exam ? answerURL : examURL), Self.sameFile(url, other) {
+    showToast(slot == .exam
+              ? "这份和「上传答案」里的是同一个文件，检查一下是不是放反了"
+              : "这份和「上传考卷」里的是同一个文件，检查一下是不是放反了",
+              on: slot)
+    return false
+}
+```
+
+`sameFile` 两级判定：
+
+1. **先比路径**（`standardizedFileURL`）—— 同一个文件被选进两个框，这是最常见的情况，一次字符串比较就够；
+2. **再比内容**（`fingerprint(ofFileAt:)`）—— 复制一份、改个名字再放进来，路径不同但内容一样，也能拦住。
+
+指纹是「字节数 + 头 128KB + 尾 128KB 的 SHA-256」，只读头尾不读全文。
+讲义的 doc/docx 只有几十 KB，本来整份读也不慢 —— 这么写只是不让「把整个文件读进内存」变成习惯。
+读不出内容时一律当作**不同**，宁可可放过去，也不要误杀。
+
+**同一次操作里还要挡类型**：`accept` 里先查 `allowedExtensions`（doc/docx）。
+`NSOpenPanel` 有 `allowedContentTypes` 挡着，但拖放绕得过 —— 不自己挡就会拖进来一个 pdf。
+
+#### 5.26.3 冒泡位置（用户特别交代）
+
+`AppState` 新增 `toast` / `toastSlot` / `showToast(_:on:)`，**每个提示都必须带 slot**。
+
+- `UploadCard` 用 `.overlay(alignment: .bottom)` 把它贴在自己**下沿内侧**（`padding(.bottom, 6)`），
+  并且只在 `state.toastSlot == slot` 时显示 —— 所以提示一定落在被操作的那个框上，
+  不会跑到窗口顶部，也不会串到另一个框。
+- **为什么不居中**：这张卡只有约 95pt 高，居中的胶囊会把「上传考卷」标题盖掉。
+  贴底部只盖住最后一行（「＊必选…」或「xx KB · …」），标题和文件名都还看得见。
+- 红色胶囊（`brandRed 0.93`）+ 白字，2.7 秒自动消失，点一下也能提前收（`dismissToast`）。
+
+#### 5.26.4 文案（两个框共用，改一处就都变）
+
+| 位置 | 改前 | 改后 |
+| --- | --- | --- |
+| 空框第二行 | ＊必选，点框里任何地方选择文件 | ＊必选，点框选择，或把文件拖进来 |
+| 有文件第二行 | `N KB · 点框里任何地方可以换一个` | `N KB · 点框更换，或拖入新文件` |
+
+两个框的 `subtitle`（「支持 .doc / .docx，含题目与原文」/「含参考答案 / 解析 / 范文」）没动。
+
+#### 5.26.5 自检
+
+```bash
+dist/讲义生成.app/Contents/MacOS/LectureGen --dupetest
+```
+
+验证四件事：①同内容不同名的指纹一致；②不同内容指纹不同；
+③考卷框放过的文件再往答案框放**必须被拒**，提示含「放反」，且 `toastSlot` 是答案框、答案框仍然是空的；
+④类型不在白名单的（.pdf）被拒。当前输出全绿。
+
+#### 5.26.6 已知局限（用户已确认不用管）
+
+查重只能抓「**同一份文件放进两个框**」。如果两份**内容不同**的文件被放反
+（答案拖进考卷框、考卷拖进答案框），程序没法知道。
+用户 2026-10-29 明确说：**放反没关系，提示词里已经让 DeepSeek 自行判断了，不用加逻辑**。
 
 ---
 

@@ -249,6 +249,105 @@ final class BrowserController: NSObject, WKNavigationDelegate, NSWindowDelegate 
         return true
     }
 
+    // MARK: - 真实键盘事件
+
+    /// 向页面注入一次真实的 ⌘+<键> 按键。
+    ///
+    /// 和 `clickAtViewportPoint` 同一个道理：JS 里 `dispatchEvent(new KeyboardEvent(...))`
+    /// 造出来的是 `isTrusted = false`，页面的快捷键处理器可以直接不理。
+    /// 走 `NSWindow.sendEvent` 的 NSEvent 是真实事件，`isTrusted = true`。
+    ///
+    /// 带 Command 的 keyDown 在 AppKit 里会先走 `performKeyEquivalent` 链，
+    /// 而 WKWebView 覆写了它、把事件转给页面 —— 网页里 ⌘A / ⌘C 能用就是走的这条路。
+    ///
+    /// 必须在主线程调用。
+    @discardableResult
+    func sendCommandKey(_ char: String, keyCode: UInt16,
+                        modifiers: NSEvent.ModifierFlags = .command) -> Bool {
+        guard let w = window else { return false }
+
+        let previousKey = NSApp.keyWindow
+        if !w.isVisible { w.orderFrontRegardless() }
+        // 只在真的不在前台时才激活：正常流程是用户刚点了「开始生成」，本来就在前台，
+        // 这一步不会触发，也就不会把窗口从别的 App 手里抢过来。
+        if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+        w.makeKeyAndOrderFront(nil)
+        w.makeFirstResponder(webView)
+        w.displayIfNeeded()
+
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let down = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: modifiers,
+                timestamp: now, windowNumber: w.windowNumber, context: nil,
+                characters: char, charactersIgnoringModifiers: char,
+                isARepeat: false, keyCode: keyCode),
+              let up = NSEvent.keyEvent(
+                with: .keyUp, location: .zero, modifierFlags: modifiers,
+                timestamp: now + 0.05, windowNumber: w.windowNumber, context: nil,
+                characters: char, charactersIgnoringModifiers: char,
+                isARepeat: false, keyCode: keyCode)
+        else { return false }
+
+        w.sendEvent(down)
+        Thread.sleep(forTimeInterval: 0.05)
+        w.sendEvent(up)
+
+        if let previousKey = previousKey, previousKey !== w, previousKey.isVisible {
+            previousKey.makeKeyAndOrderFront(nil)
+        }
+        return true
+    }
+
+    /// 从后台线程安全地读当前 URL（`webView.url` 只能在主线程取）
+    var currentURLSync: String {
+        if Thread.isMainThread { return currentURL }
+        var s = ""
+        DispatchQueue.main.sync { s = self.currentURL }
+        return s
+    }
+
+    /// `newChatByShortcut` 的三种结局
+    enum NewChatOutcome {
+        /// 页面本来就停在根地址 —— 已经是空白新对话，一个动作都不用做
+        case alreadyFresh
+        /// ⌘J 生效，URL 已经变了（附带耗时）
+        case shortcut(seconds: Double)
+        /// 停在旧会话里按了 ⌘J 没反应 —— 调用方必须回退重载
+        case failed
+    }
+
+    /// 开新对话：该按 ⌘J 才按，本来就在根地址就什么都不做。**必须在后台线程调用**。
+    ///
+    /// 判断依据是地址栏：DeepSeek 的会话页是 `/a/chat/s/<id>`，新对话是根地址。
+    ///
+    /// - 停在根地址 → 直接 `alreadyFresh`。App 刚启动、刚登录、上一轮没发出去，都落在这里。
+    ///   这种情况本来就是空对话，再按一次 ⌘J 纯属多余。
+    /// - 停在会话页 → 按 ⌘J，URL 变回根地址就算成功；3 秒没变返回 `failed`。
+    /// - 页面根本没加载完（`isPageLoaded == false`）→ 也返回 `failed`，交给调用方重载。
+    ///   这一条是保险：URL 为空时不能当成「根地址」。
+    func newChatByShortcut(timeout: Double = 3.0) -> NewChatOutcome {
+        // 主线程调用会死在下面的 main.sync 上；Pipeline 永远在后台线程，这里只是保险。
+        if Thread.isMainThread {
+            _ = sendCommandKey("j", keyCode: 38)
+            return .alreadyFresh
+        }
+        guard isPageLoaded else { return .failed }
+
+        let before = currentURLSync
+        // 不是会话页 = 已经是新对话。空字符串走不到这里（上面拦了）。
+        guard before.contains("/a/chat/s/") else { return .alreadyFresh }
+
+        DispatchQueue.main.sync { [self] in _ = sendCommandKey("j", keyCode: 38) }
+
+        var t = 0.0
+        while t < timeout {
+            Thread.sleep(forTimeInterval: 0.2)
+            t += 0.2
+            if currentURLSync != before { return .shortcut(seconds: t) }
+        }
+        return .failed
+    }
+
     // MARK: - WKNavigationDelegate
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
