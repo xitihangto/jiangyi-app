@@ -288,6 +288,9 @@ struct ContentView: View {
     @State private var loginBreathing = false
     @State private var recheckHover = false
     @State private var logoutHover = false
+    /// ⌘V 监听 + 「点框外退出等待粘贴」两个本地监听器（用户 2026-10-29 第 17 轮加粘贴）
+    @State private var pasteMonitor: Any?
+    @State private var clickMonitor: Any?
 
     var body: some View {
         ZStack {
@@ -356,6 +359,13 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .lectureAppConfirmExit)) { _ in
             showExitConfirm = true
         }
+        .onAppear { installPasteMonitor() }
+        .onDisappear {
+            if let monitor = pasteMonitor { NSEvent.removeMonitor(monitor) }
+            pasteMonitor = nil
+            if let monitor = clickMonitor { NSEvent.removeMonitor(monitor) }
+            clickMonitor = nil
+        }
         .overlay(alignment: .top) {
             // 运行日志：只压暗上半屏，底部 Word 卡（含「详情」按钮）留出来。
             // 面板绝不能盖住自己的开关 —— 盖住了用户就没法再点一次收起来。
@@ -373,6 +383,56 @@ struct ContentView: View {
             if showLogoutConfirm {
                 logoutConfirmOverlay
             }
+        }
+    }
+
+    // MARK: 粘贴监听（⌘V + 点框外取消）
+
+    /// ⌘V 监听 + 「点框外退出等待粘贴」。
+    ///
+    /// 粘贴：只有某个上传框处于「等待粘贴」状态时才接管，其余情况原样放行 ——
+    /// 不能把别处的正常粘贴吃掉。Esc 顺手退出等待粘贴态（不吞事件，免得影响别的弹窗取消）。
+    ///
+    /// 取消：**框内再点不取消，只有点框外（必须在 app 范围内）才取消**。
+    /// 这里不判断坐标 —— 判断坐标要处理 SwiftUI global 空间和 NSEvent 窗口空间的 y 轴翻转，
+    /// 平台行为一变就会「点框内反而取消」。改成**票据制**：框内任何点击都会留一张票
+    /// （`state.insideClickTicket`），mouseUp 之后异步看一眼 —— 有票作废票据、没票才取消。
+    /// 用 local monitor 而不是 SwiftUI 手势：只有发给本 App 的事件才进来，
+    /// 「点别的 app 不取消」这条天然满足。
+    private func installPasteMonitor() {
+        guard pasteMonitor == nil else { return }
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Esc：先关日志，再退等待粘贴（都不吞事件，免得影响别的弹窗取消）
+            if event.keyCode == 53 {
+                if state.showLog {
+                    state.closeLog()
+                } else if state.pasteArmed != nil {
+                    state.pasteArmed = nil
+                    state.closePasteMenu()
+                }
+                return event
+            }
+            guard let slot = state.pasteArmed,
+                  event.modifierFlags.contains(.command),
+                  event.charactersIgnoringModifiers?.lowercased() == "v"
+            else { return event }
+            state.pasteFromClipboard(into: slot)
+            return nil
+        }
+
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) { event in
+            guard state.pasteArmed != nil else { return event }
+            // 顺序很关键：local monitor 在事件派发给视图**之前**跑，框自己的 onTapGesture 在**之后**跑。
+            // 所以不能在派发前就判（那时票还没发），要推到下一轮 runloop —— 那时框内点击已经留过票了。
+            DispatchQueue.main.async {
+                if state.insideClickTicket {
+                    state.insideClickTicket = false     // 这一下点在框内，留着
+                } else if state.pasteArmed != nil {
+                    state.pasteArmed = nil              // 点在框外，取消
+                    state.closePasteMenu()              // 右键小菜单跟着一起收
+                }
+            }
+            return event
         }
     }
 
@@ -740,8 +800,13 @@ struct Backdrop: View {
 
 // MARK: - 上传卡片
 
-/// 整块可点：点框里任何地方都会打开选文件面板。
-/// 选中后右上角浮一个圆形叉，点它移除（它在 ZStack 上层，所以不会被下面的大按钮吃掉）。
+/// 一个框只放一个文件，所以不用文章版那套「三等分占位」：
+/// 有文件时直接给一张**铺满框宽**的文件卡（用户 2026-10-29 第 17 轮：「预览卡可以大到边框」）。
+///
+/// 交互照文章批改 app（同日用户要求）：
+/// - 点框内 → 进入「等待粘贴」态（蓝边 + 浅蓝底 + 标题行里冒出蓝色提示）
+/// - 加号 → 开文件面板；⌘V → 粘贴；右键 → 「粘贴 / 取消」小菜单
+/// - 点框外 / Esc → 取消激活
 struct UploadCard: View {
     @EnvironmentObject var state: AppState
     let slot: AppState.Slot
@@ -750,8 +815,9 @@ struct UploadCard: View {
 
     /// 叉按钮悬停时整体向右上挪 1pt，阴影同步放大，看着像"浮起来"了一下
     @State private var isCloseHover = false
-    /// 整张上传卡的 hover：只在卡片上叠一层浅蓝提亮，不动玻璃本身，不放大不提亮，
-    /// 避免退出/取消按钮那次的闪黑闪白；生成进行中卡片被禁用时不响应 hover。
+    /// 加号 hover：只改底色和描边，不动布局
+    @State private var plusHover = false
+    /// 整张上传卡的 hover：只在卡片上叠一层浅蓝提亮，不动玻璃本身
     @State private var cardHover = false
     /// 有文件正被拖到这张卡上方（用户 2026-10-29 第 11 轮加拖放）
     @State private var dropTargeted = false
@@ -761,54 +827,56 @@ struct UploadCard: View {
     }
 
     private var active: Bool { url != nil }
+    private var armed: Bool { state.pasteArmed == slot }
 
     private var fileSize: Int {
         guard let url = url else { return 0 }
         return ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int ?? 0) / 1024
     }
 
-    /// 用 `mutating get` 绕开 struct 里 closure 写 self 的限制
-    private mutating func setCloseHover(_ value: Bool) { isCloseHover = value }
-
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Button {
-                state.chooseFile(for: slot)
-            } label: {
-                content
-            }
-            .buttonStyle(.plain)
-            .handCursor()
-            .disabled(state.isRunning)
-
-            if active {
-                Button {
-                    state.clearFile(for: slot)
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 22, height: 22)
-                        .background(Circle().fill(Color.brandPink))
-                        .shadow(color: Color.brandPink.opacity(isCloseHover ? 0.4 : 0.3),
-                                radius: isCloseHover ? 4 : 3,
-                                y: isCloseHover ? 2 : 1)
-                        .offset(x: isCloseHover ? 1 : 0, y: isCloseHover ? -1 : 0)
-                        .animation(.easeOut(duration: 0.12), value: isCloseHover)
-                }
-                .buttonStyle(.plain)
-                .padding(11)
-                .handCursor()
-                .onHover { [self] inside in
-                    var copy = self
-                    copy.setCloseHover(inside)
-                }
-                .help("移除这个文件")
-                .transition(.scale.combined(with: .opacity))
+        VStack(alignment: .leading, spacing: 10) {
+            header
+            if let url = url {
+                fileCard(url)
+            } else {
+                emptyHint
             }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // 点框内一律「激活等待粘贴」，不再直接开面板（用户 2026-10-29 第 17 轮：
+        // 框内逻辑照文章批改 app）。开面板走右上角那个加号。
+        .onTapGesture {
+            guard !state.isRunning else { return }
+            state.armPaste(slot)
+            state.closePasteMenu()      // 右键小菜单还开着的话，这一下把它收了
+        }
+        .trialGlassCard(cornerRadius: 16,
+                        shadowOpacity: active || armed ? 0.09 : 0.03,
+                        shadowRadius: active || armed ? 14 : 6)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.brandBlue.opacity(armed || dropTargeted ? 0.06
+                                                   : (cardHover ? 0.04 : 0)))
+                .allowsHitTesting(false)
+        )
+        .overlay(
+            // 有文件时靠旋转渐变边，没有时靠这条实线；拖着文件 / 等待粘贴时变成加粗蓝色。
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(armed || dropTargeted ? Color.brandBlue.opacity(0.75)
+                                                    : Color.secondary.opacity(active ? 0 : 0.30),
+                              lineWidth: armed || dropTargeted ? 1.6 : 1.2)
+                .allowsHitTesting(false)
+        )
+        .overlay(
+            RotatingGradientBorder(radius: 16, active: active)
+                .opacity(active ? 1 : 0)
+        )
         // 拖放（用户 2026-10-29 第 11 轮）：一个框只放一个文件，只取第一个。
-        // 和点框选文件走**同一个** `accept` —— 白名单、跨框查重都在那里。
+        // 和粘贴 / 点加号选文件走**同一个** `accept` —— 白名单、跨框查重都在那里。
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             guard !state.isRunning, !providers.isEmpty else { return false }
             AppState.resolveFileURLs(from: providers) { urls in
@@ -816,13 +884,52 @@ struct UploadCard: View {
             }
             return true
         }
+        .overlay {
+            // 右键：激活本框 + 在鼠标位置冒出「粘贴 / 取消」小菜单。
+            // 窗口失焦时的第一次左键也在这里接（否则会被 AppKit 吞掉），转成「激活」。
+            // 平时左键完全穿透（见 RightClickCatcher）。
+            RightClickCatcher(
+                onRightClick: { point in
+                    guard !state.isRunning else { return }
+                    state.openPasteMenu(slot, at: point)
+                },
+                onFirstLeftClick: {
+                    guard !state.isRunning else { return }
+                    state.armPaste(slot)
+                }
+            )
+        }
+        .overlay {
+            // 小菜单。位置夹在框内，免得贴边时半个菜单露到卡片外面去。
+            if state.pasteMenuSlot == slot {
+                GeometryReader { geo in
+                    PasteBubble(
+                        onPaste: {
+                            // 留着激活态：和 ⌘V 粘贴完一样，框还是蓝的
+                            state.keepPasteArmed(slot)
+                            state.closePasteMenu()
+                            state.pasteFromClipboard(into: slot)
+                        },
+                        onCancel: {
+                            state.closePasteMenu()
+                            state.pasteArmed = nil
+                        }
+                    )
+                    .position(
+                        x: min(max(state.pasteMenuPoint.x, 62), max(geo.size.width - 62, 62)),
+                        y: min(max(state.pasteMenuPoint.y, 44), max(geo.size.height - 44, 44))
+                    )
+                }
+            }
+        }
         .onHover { cardHover = $0 && !state.isRunning }
         .animation(.easeOut(duration: 0.15), value: cardHover)
         .animation(.easeOut(duration: 0.15), value: dropTargeted)
         .animation(.easeOut(duration: 0.18), value: active)
+        .animation(.easeOut(duration: 0.18), value: armed)
         // 提示落在**本框的下沿**（用户 2026-10-29：注意冒泡位置）：
         // 只有 toastSlot 是自己的框才显示，两个框不会同时弹；
-        // 贴底部是为了不盖住标题和文件名 —— 卡片只有 ~95pt 高，居中会把标题压掉。
+        // 贴底部是为了不盖住标题和文件名。
         .overlay(alignment: .bottom) {
             if state.toastSlot == slot, let text = state.toast {
                 ToastBar(text: text) { state.dismissToast() }
@@ -832,55 +939,264 @@ struct UploadCard: View {
         }
     }
 
-    private var content: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 9) {
-                Image(systemName: active ? "doc.fill" : "doc.badge.plus")
-                    .font(.system(size: 19))
-                    .foregroundStyle(active ? Color.brandBlue : Color.secondary)
-                Text(title)
-                    .font(.system(size: 15, weight: .semibold))
-            }
+    // MARK: 标题行
 
-            if let url = url {
-                Text(url.lastPathComponent)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .padding(.horizontal, 26)
-                Text("\(fileSize) KB · 点框更换，或拖入新文件")
+    private var header: some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 14.5, weight: .semibold))
+            if active {
+                Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.green.opacity(0.9))
             } else {
-                Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                Text("＊必选，点框选择，或把文件拖进来")
-                    .font(.system(size: 11, weight: .medium))
+                Text("＊必选")
+                    .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(Color.brandPink)
             }
+            // 激活态提示直接跟在标题后面（不叠 overlay 居中）——
+            // 这一行右边有加号，居中的话会撞上。
+            if armed {
+                Text("按 ⌘V 或者右键粘贴，或拖入文件")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Color.brandBlue)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .transition(.opacity)
+            }
+            Spacer(minLength: 8)
+            plusButton
+        }
+    }
+
+    private var plusButton: some View {
+        Button {
+            // 加号也算「框内点击」，不退出等待粘贴（只有点框外才取消）
+            state.keepPasteArmed(slot)
+            state.chooseFile(for: slot)
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.brandBlue.opacity(plusHover ? 1 : 0.8))
+                .frame(width: 26, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.brandBlue.opacity(plusHover ? 0.13 : 0.07))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(Color.brandBlue.opacity(plusHover ? 0.6 : 0.30),
+                                      lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .handCursor()
+        .onHover { plusHover = $0 }
+        .animation(.easeOut(duration: 0.07), value: plusHover)
+        .disabled(state.isRunning)
+        .help("选择文件")
+    }
+
+    // MARK: 空框
+
+    private var emptyHint: some View {
+        VStack(spacing: 5) {
+            Text(subtitle)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            // 拖放早就支持了，只写粘贴的话用户看不出来还能拖（用户 2026-10-29 第 16 轮
+            // 在文章版指出过同一处漏字，这里一并写全）。
+            Text("点击此处可粘贴，或将文件拖入")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(armed ? Color.brandBlue : Color.secondary.opacity(0.85))
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 19)
-        .padding(.horizontal, 16)
-        .contentShape(Rectangle())
-        .trialGlassCard(cornerRadius: 16, shadowOpacity: active ? 0.09 : 0.03, shadowRadius: active ? 14 : 6)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.brandBlue.opacity(dropTargeted ? 0.07 : (cardHover ? 0.04 : 0)))
+        .padding(.vertical, 9)
+    }
+
+    // MARK: 文件卡（铺满框宽）
+
+    /// 只有一个文件，所以不用三等分：整张卡铺满框宽，左边文档图标、中间文件名 + 大小、
+    /// 右边一个叉。用户 2026-10-29 第 17 轮：「预览卡可以大到边框」。
+    private func fileCard(_ url: URL) -> some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.brandBlue.opacity(0.10))
+                    .frame(width: 36, height: 36)
+                Image(systemName: "doc.text.fill")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.brandBlue)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(url.lastPathComponent)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("\(fileSize) KB · 点框粘贴替换，或拖入新文件")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button {
+                state.clearFile(for: slot)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20)
+                    .background(Circle().fill(Color.brandPink))
+                    .shadow(color: Color.brandPink.opacity(isCloseHover ? 0.4 : 0.3),
+                            radius: isCloseHover ? 4 : 3,
+                            y: isCloseHover ? 2 : 1)
+                    .offset(x: isCloseHover ? 1 : 0, y: isCloseHover ? -1 : 0)
+                    .animation(.easeOut(duration: 0.12), value: isCloseHover)
+            }
+            .buttonStyle(.plain)
+            .handCursor()
+            .onHover { isCloseHover = $0 }
+            .help("移除这个文件")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.045))
         )
         .overlay(
-            // 有文件时靠上面那条旋转渐变边，没有时靠这条实线；
-            // 拖着文件悬停时这条线变成加粗的蓝色 —— 和「等待放置」的观感对上。
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(dropTargeted ? Color.brandBlue.opacity(0.75)
-                                           : Color.secondary.opacity(active ? 0 : 0.30),
-                              lineWidth: dropTargeted ? 1.6 : 1.2)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.secondary.opacity(0.14), lineWidth: 1)
         )
+    }
+}
+
+// MARK: - 右键 / 失焦首次左键
+
+/// 垫在整张上传卡上的一层透明 NSView，只在**右键**（和窗口失焦时的第一次左键）时接事件。
+///
+/// 为什么不用 SwiftUI：`onTapGesture` 只认左键；`.contextMenu` 会弹系统菜单；
+/// `.gesture` 也接不到右键。AppKit 这边 `rightMouseDown` 是现成的，
+/// 所以垫一个透明 NSView，在 `hitTest` 里**只在右键事件时返回自己**，左键一律返回 nil ——
+/// 事件继续往下一层找，框的 tap、加号的按钮都照常工作。
+///
+/// 用户 2026-10-29 第 17 轮要求（照文章批改 app）：框内右键 = 激活该框 +
+/// 在鼠标位置冒出「粘贴 / 取消」小菜单。左键连续点框内保持激活，右键也一样。
+///
+/// **顺手补的 macOS 坑**：窗口失去焦点、但仍然肉眼可见时，左键点框没反应，右键却正常。
+/// 原因是 AppKit 的「第一次点击」规则 —— 非 key 窗口上的左键只用来激活窗口，事件被吞掉，
+/// 除非命中的视图 `acceptsFirstMouse` 返回 true。右键不受这条限制，所以只有左键坏。
+/// 修法：窗口不是 key 时，这一层把左键也接过来（`hitTest` 返回自己），
+/// `mouseDown` 里直接转成「激活粘贴框」。窗口变 key 之后照旧穿透，一切照常。
+struct RightClickCatcher: NSViewRepresentable {
+    /// 右键回调。参数是**框内坐标**（左上原点，y 向下），用来决定小菜单弹在哪
+    let onRightClick: (CGPoint) -> Void
+    /// 窗口没焦点时的第一次左键（本来会被 AppKit 吞掉）—— 转成「激活这个框」
+    let onFirstLeftClick: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let v = CatcherView()
+        v.onRightClick = onRightClick
+        v.onFirstLeftClick = onFirstLeftClick
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let v = nsView as? CatcherView else { return }
+        v.onRightClick = onRightClick
+        v.onFirstLeftClick = onFirstLeftClick
+    }
+
+    final class CatcherView: NSView {
+        var onRightClick: ((CGPoint) -> Void)?
+        var onFirstLeftClick: (() -> Void)?
+
+        /// 不返回 true 的话，窗口没焦点时这一层连事件都收不到
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            // 判断「当前这个事件是不是右键」—— NSApp.currentEvent 在命中测试期间就是它。
+            // 不是右键就返回 nil，等于这一层不存在（左键穿透）。
+            guard let type = NSApp.currentEvent?.type else { return nil }
+            switch type {
+            case .rightMouseDown, .rightMouseUp, .rightMouseDragged:
+                return super.hitTest(point)
+            case .leftMouseDown:
+                // 窗口不是 key：这一下左键本来会被 AppKit 吞掉（只拿去激活窗口），
+                // 拦下来自己处理，让「点框 = 激活粘贴」在失焦状态下也成立。
+                return window?.isKeyWindow == false ? super.hitTest(point) : nil
+            default:
+                return nil
+            }
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            // NSView 默认坐标原点在左下，SwiftUI 的 overlay 是左上原点 —— 这里翻一下，
+            // 否则小菜单会上下颠倒地弹出来。
+            let p = convert(event.locationInWindow, from: nil)
+            onRightClick?(CGPoint(x: p.x, y: bounds.height - p.y))
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            onFirstLeftClick?()
+        }
+    }
+}
+
+// MARK: - 右键小菜单
+
+/// 右键弹出的两选一气泡（照文章批改 app）：圆角矩形、仿 glass、只有「粘贴 / 取消」。
+/// 不用系统 `.contextMenu`：那个是系统样式的菜单，和这套玻璃卡片不搭，也没法定两个选项的样式。
+struct PasteBubble: View {
+    let onPaste: () -> Void
+    let onCancel: () -> Void
+
+    @State private var hover: Int?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            row(0, title: "粘贴", icon: "doc.on.clipboard", action: onPaste)
+            Rectangle()
+                .fill(Color.secondary.opacity(0.18))
+                .frame(height: 1)
+                .padding(.horizontal, 8)
+            row(1, title: "取消", icon: "xmark", action: onCancel)
+        }
+        .padding(5)
+        .frame(width: 112)
+        .trialGlassCard(cornerRadius: 12, shadowOpacity: 0.22, shadowRadius: 14)
         .overlay(
-            RotatingGradientBorder(radius: 16, active: active)
-                .opacity(active ? 1 : 0)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.secondary.opacity(0.16), lineWidth: 1)
+                .allowsHitTesting(false)
         )
+        .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .center)))
+    }
+
+    private func row(_ index: Int, title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 10.5))
+                    .frame(width: 13)
+                Text(title)
+                    .font(.system(size: 12))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(hover == index ? Color.brandBlue : Color.primary.opacity(0.86))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.brandBlue.opacity(hover == index ? 0.12 : 0))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { hover = index } else if hover == index { hover = nil }
+        }
     }
 }
 

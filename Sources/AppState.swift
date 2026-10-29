@@ -809,6 +809,67 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - 等待粘贴 / 右键小菜单（用户 2026-10-29 第 17 轮，逻辑照文章批改 app）
+
+    /// 当前处于「等待粘贴」状态的框，同时只有一个：点另一个框会把它取消。
+    @Published var pasteArmed: Slot?
+
+    /// 框内点击的「票据」：框内任何点击都会置 true，全局鼠标监听在 mouseUp 之后看一眼 ——
+    /// **有票就不取消，没票才取消**。
+    ///
+    /// 为什么不用时间戳：右键可以按住不放，按住的时长会把时间戳拖过阈值，
+    /// 长按右键就会被误判成「点在外面」，框莫名其妙取消激活。票据跟按键时长完全无关。
+    var insideClickTicket = false
+
+    /// 框内被点击：激活等待粘贴，并留一张票
+    func armPaste(_ slot: Slot) {
+        pasteArmed = slot
+        insideClickTicket = true
+    }
+
+    /// 框内某个控件（加号、预览卡、叉）被点了：本来就在等粘贴的话，别退出
+    func keepPasteArmed(_ slot: Slot) {
+        if pasteArmed == slot { insideClickTicket = true }
+    }
+
+    /// 右键弹出的小菜单：哪个框、弹在框内哪个位置（左上原点，单位 pt）。
+    /// 右键**不直接粘贴**，只激活 + 冒出这个两选一的小菜单。
+    @Published var pasteMenuSlot: Slot?
+    @Published var pasteMenuPoint: CGPoint = .zero
+
+    func openPasteMenu(_ slot: Slot, at point: CGPoint) {
+        armPaste(slot)
+        pasteMenuPoint = point
+        pasteMenuSlot = slot
+    }
+
+    func closePasteMenu() { pasteMenuSlot = nil }
+
+    /// ⌘V / 右键小菜单：从**系统剪贴板**往框里放一个文件。
+    func pasteFromClipboard(into slot: Slot) {
+        paste(from: .general, into: slot)
+    }
+
+    /// 真正干活的那一层。剪贴板作为参数传进来，自检就能用一块私有剪贴板。
+    ///
+    /// 讲义只收 Word，所以只处理「剪贴板里是文件」这一种；没有文件就直说，
+    /// 不去猜「是不是想粘一张图」—— 讲义的两份输入都是 docx，粘图没有意义。
+    ///
+    /// ⚠️ 剪贴板里一旦有文件 URL，就走完这个分支直接 return，
+    /// **绝不能落到 `NSImage(pasteboard:)`**：它会把文件 URL 当图片去解，
+    /// 白名单不认的格式（tiff / heic / gif）就这样被塞进框里 ——
+    /// 文章版踩过这个坑，症状是「提示了类型不支持，文件却还是进来了」。
+    func paste(from pb: NSPasteboard, into slot: Slot) {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let urls = (pb.readObjects(forClasses: [NSURL.self], options: options) as? [URL]) ?? []
+        guard !urls.isEmpty else {
+            showToast("剪贴板里没有文件，讲义只收 .doc / .docx", on: slot)
+            return
+        }
+        // 复用拖放那条路：只取第一个，多出来的给一句提示；白名单、跨框查重都在 accept 里
+        acceptDropped(urls, for: slot)
+    }
+
     /// 把拖进来的 `NSItemProvider` 解析成文件 URL（保持拖进来的顺序）。
     /// 全部回来之后再回调，这样「拖了 3 个」只弹一条提示，而不是三条。
     static func resolveFileURLs(from providers: [NSItemProvider],
@@ -983,6 +1044,9 @@ final class AppState: ObservableObject {
         heldFiles = (exam, answer)
         examURL = nil
         answerURL = nil
+        // 框都空了，还挂着「等待粘贴」的蓝边就很怪；小菜单也一起收掉
+        pasteArmed = nil
+        closePasteMenu()
     }
 
     /// 失败 / 中止时把文件放回上传框

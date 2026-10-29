@@ -1102,6 +1102,86 @@ private func rememberDirectory(_ url: URL, slot: Slot) {
 
 ---
 
+### 5.29 ⏳ 上传框支持粘贴 + 预览卡铺满框宽（2026-10-29，**临时记录，待推送**）
+
+> 用户第 17 轮：「讲义 app 大更新吧，支持粘贴，框内逻辑参考文章 app，但预览卡可以大到边框，
+> 不必什么三等分，因为只有一个文件」。
+> 同 §5.28：先编译、记待办，等他说推的时候一起推；**推送后本节改成正式记录并删掉 §7 的待办**。
+
+#### 背景：本工程原来是**故意**不支持粘贴的
+
+§5.26 那轮用户明确说「要拖入、**不要粘贴**」，所以只做了 `onDrop` + 点框开面板。
+第 17 轮改成支持粘贴，交互整套照 `article-correct-app` 搬。
+
+#### 从文章版搬过来的四件东西
+
+1. **`AppState` 的等待粘贴状态**
+   - `@Published var pasteArmed: Slot?` —— 同时只有一个框激活，点另一个框自动换过去
+   - `insideClickTicket` —— **票据制**，不是时间戳。框内任何点击留一张票，全局 mouseUp 监听
+     异步看一眼：有票作废、没票才取消。用时间戳会被「按住右键不放」骗过（按住时长越过阈值 → 误判点在外面）
+   - `armPaste` / `keepPasteArmed` / `openPasteMenu` / `closePasteMenu`
+2. **`ContentView.installPasteMonitor()`** —— 两个 `NSEvent.addLocalMonitorForEvents`
+   - `keyDown`：Esc 关日志 → 再退激活；`⌘V` 且 `pasteArmed != nil` 才接管并 `return nil`（吃掉事件），
+     其余情况原样放行，不能把别处的正常粘贴吃了
+   - `leftMouseUp` / `rightMouseUp`：点框外取消。用 local monitor 而不是 SwiftUI 手势，
+     「点别的 app 不取消」这条天然满足
+   - `.onAppear` 装、`.onDisappear` 卸
+3. **`RightClickCatcher`**（NSViewRepresentable）—— 垫一层透明 NSView，
+   `hitTest` 里**只在右键时返回自己**，左键一律 nil（穿透）。顺手修了「窗口失焦时第一次左键被
+   AppKit 吞掉」的老坑：窗口不是 key 时把左键也接过来，转成「激活粘贴」。
+4. **`PasteBubble`** —— 右键弹出的「粘贴 / 取消」两选一气泡，仿 glass，不用系统 `.contextMenu`
+
+#### 粘贴只处理文件，不碰图片
+
+讲义的两份输入都是 `.doc / .docx`，粘一张图没有意义。所以 `paste(from:into:)` 只读
+`urlReadingFileURLsOnly`，没有文件就提示「剪贴板里没有文件，讲义只收 .doc / .docx」。
+
+⚠️ **有文件 URL 时必须走完分支直接 return，绝不能落到 `NSImage(pasteboard:)`** ——
+它会把文件 URL 当图片解，白名单不认的格式（tiff / heic / gif）就这样被塞进框里。
+文章版踩过，症状是「提示了类型不支持，文件却还是进来了」。
+
+拿到 URL 后复用 `acceptDropped(urls, for:)`（只取第一个 + 多文件提示），
+白名单和跨框查重都在 `accept` 里，三条入口（粘贴 / 拖入 / 加号）规则完全一致。
+
+#### `UploadCard` 重写
+
+原来整张卡是一个 `Button`，点哪儿都开面板。现在拆成：
+
+```
+VStack(alignment: .leading, spacing: 10) {
+    header      // 标题 + ＊必选/✓ + [激活时的蓝色提示] + 加号
+    fileCard    // 有文件：铺满框宽的文件卡
+    / emptyHint // 没文件：副标题 + 「点击此处可粘贴，或将文件拖入」
+}
+.onTapGesture { armPaste(slot) }     // 点框 = 激活粘贴，不再开面板
+```
+
+- **加号**（26×26，标题行最右）→ `chooseFile`，开面板。这是唯一开面板的入口
+- **预览卡铺满框宽**：左边文档图标、中间文件名 + 大小、右边叉。没有三等分占位 ——
+  一个框只有一个文件，留空位纯属浪费宽度
+- **叉从右上角浮层挪进卡片右侧**：卡片铺满后，浮在角上会压住文件名
+- **激活态提示放在标题行内**（跟在「＊必选」后面），**不叠 overlay 居中** ——
+  这一行右边有加号，居中的话会撞上
+- `submitAndClearUploads()` 顺手清 `pasteArmed` + 关小菜单：框都空了还挂着蓝边很怪
+
+#### 高度变化
+
+| 状态 | 原来 | 现在 |
+|---|---|---|
+| 空框 | ~95pt | ~106pt |
+| 有文件 | ~95pt | ~114pt |
+
+两个框多出 20–40pt，外层本来就是 `ScrollView`，窗口装不下时可以滚，不会崩。
+
+#### 验证
+
+- `./build.sh --install` 通过，`Identifier=com.workbuddy.lecturegen` 正常
+- **真实交互没跑过**：⌘V / 右键小菜单 / 点框外取消，都要用户上手点一遍
+
+**版本**：未升版，**未推 GitHub**。
+
+---
+
 ## 6. DeepSeek 网页真实结构（实测，别猜）
 
 来源：`~/Desktop/讲义生成-DOM快照-*.json`（用户导出的真实快照）
@@ -1176,9 +1256,12 @@ private func rememberDirectory(_ url: URL, slot: Slot) {
 
 ### ⏳ 待推送（用户 2026-10-29 第 16 轮：先编译、先记着，等他说推再一起推）
 
-- [ ] **上传框目录互相同步**（改动见 §5.28，已编译安装，未推 GitHub）
+- [ ] **上传框目录互相同步 + `build.sh` 补 `xattr -cr`**（改动见 §5.28，已编译安装，未推 GitHub）
   - 推送时要做：①升 `CFBundleShortVersionString` ②`git push origin main` + `git push origin vX.Y`
     ③把 §5.28 标题里的「⏳ 临时记录，待推送」去掉、改成正式记录 ④删掉本条待办
+- [ ] **上传框支持粘贴 + 预览卡铺满框宽**（改动见 §5.29，已编译安装，未推 GitHub）
+  - 推送时要做：同上四步；另外**真实交互还没验**（⌘V / 右键菜单 / 点框外取消），
+    最好让用户先点一遍再推
 
 ### 仍需验收（只观察，不改代码）
 - 真实登录页面验收深度思考+智能搜索自动激活（见 §5.12④）
