@@ -1089,6 +1089,14 @@ private func rememberDirectory(_ url: URL, slot: Slot) {
 作文是 `acceptBatch` 之后记）：哪怕文件因为类型不对被拒，「用户导航到了哪个目录」
 这个事实也该记住并同步。
 
+#### 顺带补的：`build.sh` 签名前加 `xattr -cr`
+
+查作文版的时候发现 `codesign` 那行是 `... 2>/dev/null || echo "  (签名跳过)"`，
+**`xattr -cr` 三个 App 的 build.sh 都没有**（本工程只是碰巧没复现）。
+一旦签名被跳过，bundle 只剩 linker-signed、`Identifier` 退化成可执行文件名 `LectureGen`，
+而 `UserDefaults` 和 WKWebView 的 cookie 都按 Identifier 分域 —— 目录记忆和登录态一起丢。
+本工程也补上，并去掉 `2>/dev/null` 让失败可见。详见 §8 坑表最后一行。
+
 **版本**：未升版（按 §10 约定，日常改动沿用当前版本号，用户说发布才升）。
 本地已 `./build.sh --install`，**未推 GitHub**。
 
@@ -1206,6 +1214,7 @@ private func rememberDirectory(_ url: URL, slot: Slot) {
 | 登出后重新登录窗口自动收起 | 来不及登录窗口就没了 | `logoutDeepSeek()` 要停掉旧 timer + 重置 `browserShownForLogin`。见 §5.12① |
 | 登出后状态框还显示"已登录" | 状态没刷新 | `logoutDeepSeek()` 要清 `progress = ProgressInfo()`。见 §5.12① |
 | Finder 里 App 图标不显示 | 只有 Dock 有图标 | build.sh 要加 `SetFile -a B` 标记 bundle。见 §5.12① |
+| **`codesign` 静默跳过，bundle id 悄悄变了**（三个 App 的 build.sh 都漏过，2026-10-29 在作文版复现后统一补上） | 构建日志只有一句「(签名跳过)」，看起来正常；`codesign -dv` 显示 `flags=0x20002(adhoc,linker-signed)`、`Info.plist=not bound`、`Identifier=LectureGen` 而不是 `com.workbuddy.lecturegen` | 增量构建时 `SetFile -a B` 写进去的 FinderInfo 让 codesign 报 `resource fork, Finder information, or similar detritus not allowed`，被 `2>/dev/null` 吞掉就只剩一句「跳过」。**后果很隐蔽**：`UserDefaults` 和 WKWebView 的 cookie 都按 Identifier 分域 → 偏好全丢、DeepSeek 登录态丢失。修法：签名前 `xattr -cr "$APP"`（本工程 build.sh 已补），**且不要 `2>/dev/null`**。查体：`codesign -dv` 的 `Identifier` 必须等于 `Info.plist` 的 `CFBundleIdentifier` |
 
 ---
 

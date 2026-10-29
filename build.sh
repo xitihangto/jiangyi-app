@@ -65,7 +65,14 @@ PLIST
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 echo "▸ 临时签名"
-codesign --force --sign - --timestamp=none "$APP" 2>/dev/null || echo "  (签名跳过)"
+# 增量构建时 SetFile 写进去的 FinderInfo 会让 codesign 报
+# "resource fork, Finder information, or similar detritus not allowed" 并**静默失败**
+# —— 一旦跳过，bundle 只剩 linker-signed，Identifier 变成可执行文件名（LectureGen），
+# 不再是 Info.plist 里的 com.workbuddy.*，而 UserDefaults 和 WKWebView 的 cookie
+# 都是按 Identifier 分域的，后果是「上次选择 / 目录记忆」读不到、登录态丢失。
+# 所以先清干净再签，且失败要能看见（不要 2>/dev/null）。
+xattr -cr "$APP" 2>/dev/null || true
+codesign --force --sign - --timestamp=none "$APP" || echo "  ⚠️ 签名失败（Identifier 会退化成可执行名，UserDefaults 域跟着变）"
 
 # 必须标记为 Bundle，否则 Finder 不显示图标
 SetFile -a B "$APP" 2>/dev/null || echo "  (SetFile 跳过)"
