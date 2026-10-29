@@ -424,6 +424,19 @@ extension AppState {
             if hasContinue {
                 stableRounds = 0
 
+                // ⚠️ 2026-10-29 实测踩到的坑（试卷识别 app 同步过来）：文字还在长，
+                // 说明其实正在生成，但「继续生成」按钮可能仍挂在 DOM 上
+                // （停止按钮是纯图标，generating 认不出来），这时点下去会落到
+                // 同一位置的「停止」上，把刚恢复的生成掐死。
+                // 日志证据：点完继续 1.6 秒后又点了一次 → 之后 24 秒一个字没涨 → 失败。
+                // 所以：最近 4 秒内还在涨字，就绝不点，老老实实等它写完。
+                if Date().timeIntervalSince(lastChangeAt) < 4.0 {
+                    lastTextLen = textLen
+                    lastCodeLen = codeLen
+                    Thread.sleep(forTimeInterval: 1.0)
+                    continue
+                }
+
                 if clicksIneffective >= 2 {
                     throw BridgeError.failed(
                         "AI 停下来之后没有继续写。可能到了长度上限，请再试一次。")
@@ -438,28 +451,60 @@ extension AppState {
 
                 if r.hasPrefix("REAL_MOUSE") || r.hasPrefix("CLICKED:") {
                     log("点「继续」第 \(clicksTried) 次 → \(r)")
-                    // DeepSeek 点完「继续」要先「想」一会儿才开始吐字，实测远超 3 秒。
-                    // 等太短会把有效点击误判成无效，两次就直接抛错了。
-                    var grew = false
-                    for attempt in 0..<6 {
-                        Thread.sleep(forTimeInterval: 2.0)
-                        if let now = try? self.textLength(), now > before {
-                            grew = true
-                            log("继续生效（约 \(2 * (attempt + 1)) 秒后开始出字，涨了 \(now - before) 字）")
+
+                    // 【2026-10-29】判据换了：不看「12 秒内有没有涨字」，看「按钮有没有消失」。
+                    //
+                    // 用户实测：手点下去按钮**瞬间消失**，绝不会变成「停止」。
+                    // 而 AI 点完「继续」要先重新想十几秒才出字，用「涨字」当判据
+                    // 会把有效点击误判成无效、多点一次，把生成掐死。
+                    //
+                    // probeY：只认刚点的那个位置，别把历史消息残留的旧按钮算进来。
+                    let probeY = self.clickedY(from: r)
+                    var buttonGone = false
+                    for _ in 0..<3 {
+                        Thread.sleep(forTimeInterval: 0.2)
+                        if let gone = try? self.continueButtonGone(nearY: probeY), gone {
+                            buttonGone = true
                             break
                         }
                     }
-                    if grew {
-                        clicksIneffective = 0
-                        lastChangeAt = Date()
-                        // 分段开始必须在状态框里留一句：第 1 段是原生的，第 1 次点“继续”就是第 2 段开始。
-                        // 自动点“继续”本身不动（用户要求），一般最多 3 段、点两次，5 次上限只是兜底，不改。
-                        // 点完后下一轮就是 5 秒播报重新开始，直到结束。
-                        say("第 \(clicksTried + 1) 段开始生成", detail: "代码目前 \(codeLen) 字，正在等它继续输出",
-                            running: true)
+
+                    if buttonGone {
+                        log("按钮已消失，点击被页面接受")
+                        // 点击成功后就安心等它出字。实测最长 12 秒以上，这里给 24 秒。
+                        // 6 秒后开始顺带盯按钮：AI 有时只写两三百字又截断，
+                        // 按钮几秒内会重新出现，死等 24 秒纯属白耗。
+                        var grew = false
+                        for attempt in 0..<12 {
+                            Thread.sleep(forTimeInterval: 2.0)
+                            if let now = try? self.textLength(), now > before {
+                                grew = true
+                                log("继续生效（约 \(2 * (attempt + 1)) 秒后开始出字，涨了 \(now - before) 字）")
+                                break
+                            }
+                            if attempt >= 2, let back = try? self.continueButtonGone(nearY: probeY), !back {
+                                log("按钮又出现了（等了 \(2 * (attempt + 1)) 秒没出字），AI 又停住了，交给下一轮再催")
+                                break
+                            }
+                        }
+                        if grew {
+                            clicksIneffective = 0
+                            lastChangeAt = Date()
+                            // 分段开始必须在状态框里留一句：第 1 段是原生的，第 1 次点“继续”就是第 2 段开始。
+                            // 自动点“继续”本身不动（用户要求），一般最多 3 段、点两次，5 次上限只是兜底，不改。
+                            // 点完后下一轮就是 5 秒播报重新开始，直到结束。
+                            say("第 \(clicksTried + 1) 段开始生成", detail: "代码目前 \(codeLen) 字，正在等它继续输出",
+                                running: true)
+                        } else {
+                            // 按钮消失了却没出字：点击是有效的，只是 AI 还在想。
+                            // 绝不能重复点击（会掐死生成），交给外层循环和总超时兜底。
+                            log("按钮已消失但 24 秒未见新内容，继续等，不重复点击")
+                        }
                     } else {
+                        // 按钮还在 = 这次点击被吞了（窗口刚激活 / 页面没有 hover 状态）。
+                        // 立刻补一次，不用干等 12 秒。
                         clicksIneffective += 1
-                        log("点了 12 秒仍无新内容（无效 \(clicksIneffective)/2）")
+                        log("点了 0.6 秒按钮仍在，这次点击被吞了（无效 \(clicksIneffective)/2）")
                     }
                 } else {
                     clicksIneffective += 1
@@ -534,33 +579,80 @@ extension AppState {
 
     /// 点「继续生成」
     /// 内置浏览器走真实 NSEvent 注入（isTrusted = true），Safari 只能走 JS。
+    ///
+    /// 2026-10-29 加了两道保险（用户实测：手点 0.1–0.2 秒就继续、按钮瞬间消失）：
+    /// ① 坐标只在按钮**已经在视口内**时才取，需要滚动就先返回 SCROLLING 等滚完再取；
+    /// ② 点之前做 `elementFromPoint` 命中测试，命中元素不是按钮就绝不下手。
     private func clickContinueButton() throws -> String {
-        let raw = try self.js(Scripts.locateContinue)
+        var lastRaw = "NOT_TRIED"
 
-        if raw == "NOT_FOUND" { return "NOT_FOUND" }
-        if raw == "ZERO_SIZE" { return "ZERO_SIZE" }
+        for attempt in 0..<4 {
+            let raw = try self.js(Scripts.locateContinue)
+            lastRaw = raw
 
-        guard let data = raw.data(using: .utf8),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let x = obj["x"] as? Double,
-              let y = obj["y"] as? Double else {
-            return "BAD_LOCATE:\(raw.prefix(60))"
-        }
-
-        if engine == .webview {
-            var ok = false
-            DispatchQueue.main.sync {
-                ok = self.browser.clickAtViewportPoint(x: CGFloat(x), y: CGFloat(y))
+            // 页面刚滚动过，坐标还不作数 —— 等它停稳再取一次
+            if raw == "SCROLLING" {
+                log("「继续」按钮不在视口内，滚动后重新取坐标（\(attempt + 1)/4）")
+                Thread.sleep(forTimeInterval: 0.45)
+                continue
             }
-            if ok {
-                return String(format: "REAL_MOUSE(%.0f,%.0f)", x, y)
+
+            // 按钮被别的东西盖住 / 正在淡出 —— 等一下再看，不算一次失败
+            if raw.hasPrefix("NOT_HIT") {
+                log("「继续」按钮命中测试未通过（\(raw)），\(attempt < 3 ? "稍后重试" : "放弃")")
+                if attempt < 3 { Thread.sleep(forTimeInterval: 0.5) }
+                continue
             }
+
+            if raw == "NOT_FOUND" { return "NOT_FOUND" }
+            if raw == "ZERO_SIZE" { return "ZERO_SIZE" }
+
+            guard let data = raw.data(using: .utf8),
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let x = obj["x"] as? Double,
+                  let y = obj["y"] as? Double else {
+                return "BAD_LOCATE:\(raw.prefix(60))"
+            }
+
+            if engine == .webview {
+                var ok = false
+                DispatchQueue.main.sync {
+                    ok = self.browser.clickAtViewportPoint(x: CGFloat(x), y: CGFloat(y))
+                }
+                if ok {
+                    return String(format: "REAL_MOUSE(%.0f,%.0f)", x, y)
+                }
+                let js = try self.js(Scripts.clickContinue)
+                return "FALLBACK_JS:\(js.prefix(80))"
+            }
+
             let js = try self.js(Scripts.clickContinue)
-            return "FALLBACK_JS:\(js.prefix(80))"
+            return "SAFARI_JS:\(js.prefix(120))"
         }
 
-        let js = try self.js(Scripts.clickContinue)
-        return "SAFARI_JS:\(js.prefix(120))"
+        return "LOCATE_UNSTABLE:\(lastRaw.prefix(60))"
+    }
+
+    /// 「继续」按钮还在不在（只探测，不滚动、不点击、无副作用）
+    ///
+    /// `nearY` 是刚才点击时的视口 y。只检查这个位置附近的按钮，
+    /// 避免历史消息里残留的旧「继续生成」被当成「按钮还在」。
+    private func continueButtonGone(nearY: Double?) throws -> Bool {
+        let raw = try self.js(Scripts.probeContinue(nearY: nearY))
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines) == "NO"
+    }
+
+    /// 从 `REAL_MOUSE(123,456)` 里取出点击时的 y 坐标
+    private func clickedY(from result: String) -> Double? {
+        let prefix = "REAL_MOUSE("
+        guard result.hasPrefix(prefix) else { return nil }
+        guard let close = result.firstIndex(of: ")") else { return nil }
+        let inner = result[result.index(result.startIndex, offsetBy: prefix.count)..<close]
+        let parts = inner.split(separator: ",")
+        guard parts.count == 2, let y = Double(parts[1].trimmingCharacters(in: .whitespaces)) else {
+            return nil
+        }
+        return y
     }
 
     /// 把页面上的代码块取回来，挑出最像「生成讲义」的那段

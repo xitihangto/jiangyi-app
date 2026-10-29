@@ -946,6 +946,101 @@ dist/讲义生成.app/Contents/MacOS/LectureGen --dupetest
 
 ---
 
+### 5.27 继续按钮逻辑对齐试卷识别（2026-10-29）
+
+试卷识别 app 把「点继续」这条链路磨了三轮，用户要求把结论整套搬回来。
+
+> ⚠️ **§5.6「点击后必须验证，且要等够久」里的 12 秒判据已作废**，以本节为准。
+> 别再照着 §5.6 改回去 —— 那套判据会把有效点击误判成无效，补点一次就把生成掐死。
+
+本工程原来的版本比试卷识别 app 旧两轮：**没有 4 秒保护期、没有按钮消失判据、
+`locateContinue` 无条件滚动且没有命中测试、点击也不补 `mouseMoved`**。
+
+#### 5.27.1 点击前必须补一次 `mouseMoved`（`BrowserController.clickAtViewportPoint`）
+
+用户实测：同一个坐标连点 5 次，**第 1、3 次无效**，第 2、4、5 次有效 ——
+每次「继续」按钮出现后的第一次点击都被吞掉。两个原因叠在一起：
+
+1. `makeKeyAndOrderFront` 之后立刻 `sendEvent`，窗口还没真正成为 key，
+   第一次点击被系统拿去激活窗口，事件落不到 webview；
+2. 从没发过 `mouseMoved`，页面没有这个坐标的 hover 状态，
+   React 的 `onMouseEnter` 不触发、WebKit 的 tracking area 也没建立。
+
+修法：先发一次 `.mouseMoved`，`Thread.sleep(0.12)`，再 down/up（时间戳顺延到 `now+0.12` / `now+0.18`）。
+**顺序很关键**：`mouseMoved` 必须在 `makeKeyAndOrderFront` 之后发，否则窗口还没起来，事件照样丢。
+
+#### 5.27.2 判据从「12 秒涨字」改成「0.6 秒按钮消失」
+
+原来的写法是点完盯着字数涨，`for attempt in 0..<6` 每 2 秒看一眼，12 秒不涨就记一次无效。
+问题：AI 点完「继续」要先重新想十几秒才出字，**有效点击会被误判成无效**，
+两次就抛「AI 停下来之后没有继续写」；更糟的是补点一次会把刚恢复的生成掐死。
+
+用户实测：手点下去按钮**瞬间消失**，绝不会变成「停止」。所以改成：
+
+- 点完连查 3 次、每次间隔 0.2 秒，看按钮是否消失（共 0.6 秒）
+- 消失了 → 认定点击被接受，再给 24 秒等出字，期间**绝不重复点击**
+- 没消失 → 才算被吞，立刻补一次
+
+#### 5.27.3 `probeContinue(nearY:)` 只认「刚点的那个位置」
+
+新加的 `Scripts.probeContinue(nearY:)` 用来判断按钮还在不在，**不滚动、不点击、无副作用**。
+
+⚠️ 它必须只认 `nearY`（点击时的视口 y）**±40px** 那个位置上的按钮，不能写成
+「页面上有任意一个继续按钮就算」—— `locateContinue` 是按 `top` 降序取**最靠下**（最新）
+的那个去点，两套判据必须对齐。历史消息里如果还留着旧的「继续生成」按钮（DOM 没清掉），
+按「任意一个」判就会永远认为「按钮还在」→ 误判成「点击被吞」→ 攒够 2 次直接抛错。
+
+`nearY` 从 `REAL_MOUSE(x,y)` 的返回值里解析（`clickedY(from:)`）；
+拿不到（走 JS 兜底点击）时传 nil，退化成「任意位置存在即算」。
+
+#### 5.27.4 24 秒死等改成「6 秒后开始盯按钮」
+
+点完确认消失后，原来是一个 `for attempt in 0..<12` 干等 24 秒。
+但 AI 有时只写两三百字又截断，按钮几秒内就重新出现，这 24 秒纯白等。
+现在 6 秒后顺带探测按钮，一冒出来就 `break` 交回外层循环再催。
+
+#### 5.27.5 4 秒保护期（本工程原来完全没有）
+
+**文字还在长 = 其实正在生成**，但「继续生成」按钮可能仍挂在 DOM 上
+（停止按钮是纯图标，`generating` 认不出来）。这时点下去会落到同一位置的「停止」上，
+把刚恢复的生成掐死。日志证据（试卷识别 app）：点完继续 1.6 秒后又点了一次 →
+之后 24 秒一个字没涨 → 失败。
+
+所以：`Date().timeIntervalSince(lastChangeAt) < 4.0` 时绝不点，老实等它写完。
+
+#### 5.27.6 `offsetParent === null` 判不出 `position: fixed`
+
+`position: fixed` 元素的 `offsetParent` **同样是 null**，会被当成「不存在」。
+本工程有 4 处用了这个判据（`sendNow` / `probeComposer` / `clickContinue` / `locateContinue`），
+全部换成 `getComputedStyle` 的 `display` + `getBoundingClientRect()` 实际宽高。
+
+最要命的是 `probeComposer`：漏掉「停止」按钮 → `generating` 恒 false →
+以为没在生成、提前点继续 → **把生成掐死**。
+
+**以后在这个工程里判按钮可见性，一律别用 `offsetParent`。**
+
+#### 5.27.7 `locateContinue` 另外三项
+
+- 文字改从 `.ds-button__content` 取（用户 DevTools 实测，按钮是
+  `<div role="button" class="ds-button …"><span class="ds-button__content">继续生成</span></div>`）
+- 只有按钮**不在视口内**才滚，且用 `behavior:'auto'`；要滚就返回 `SCROLLING`，
+  让 Swift 等滚动停下再取一次坐标。
+  原来无条件 `scrollIntoView({behavior:'instant'})`，而 `'instant'` 不是标准值，
+  WebKit 会退回平滑滚动 —— 下一行立刻取的 rect 还是旧坐标，点下去就落到别处。
+- 点之前做 `elementFromPoint` 命中测试，命中元素不是按钮本身或子孙就返回 `NOT_HIT`，绝不下手
+
+`clickContinueButton` 相应改成 4 次重试循环，处理 `SCROLLING` / `NOT_HIT`，失败返回 `LOCATE_UNSTABLE`。
+
+#### 验证
+
+- 三个 App（试卷识别 / 讲义生成 / 作文批改）的 `locateContinue` + `probeContinue`
+  共 12 段 JS 全部过 `node --check`（nil 与非 nil 两种插值都验）
+- `swiftc -typecheck` 通过，`./build.sh --install` 通过，单实例启动
+- **真实网页端的表现还没跑过**：这套逻辑是从试卷识别 app 的实测结论搬来的，
+  本工程的按钮 DOM 是否完全一致（`.ds-button__content` 是否存在）**尚未验证**
+
+---
+
 ## 6. DeepSeek 网页真实结构（实测，别猜）
 
 来源：`~/Desktop/讲义生成-DOM快照-*.json`（用户导出的真实快照）

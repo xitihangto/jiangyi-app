@@ -220,23 +220,39 @@ final class BrowserController: NSObject, WKNavigationDelegate, NSWindowDelegate 
         let local = NSPoint(x: x, y: localY)
         let inWindow = webView.convert(local, to: nil)
 
-        let now = ProcessInfo.processInfo.systemUptime
-        guard let down = NSEvent.mouseEvent(
-                with: .leftMouseDown, location: inWindow, modifierFlags: [],
-                timestamp: now, windowNumber: w.windowNumber, context: nil,
-                eventNumber: 0, clickCount: 1, pressure: 1.0),
-              let up = NSEvent.mouseEvent(
-                with: .leftMouseUp, location: inWindow, modifierFlags: [],
-                timestamp: now + 0.06, windowNumber: w.windowNumber, context: nil,
-                eventNumber: 1, clickCount: 1, pressure: 0.0)
-        else { return false }
-
         // 窗口必须是「在窗口服务器里存在」的状态，hitTest 才找得到视图。
         // 不需要显示出来 —— alpha = 0 的窗口一样能收事件（实测）。
         let previousKey = NSApp.keyWindow
         if !w.isVisible { w.orderFrontRegardless() }
         w.makeKeyAndOrderFront(nil)
         w.displayIfNeeded()
+
+        // 【2026-10-29 实测，试卷识别 app 同步过来】同一个坐标连点 5 次，
+        // 第 1、3 次无效、第 2、4、5 次有效 —— 每次「继续」按钮出现后的第一次点击都被吞掉。
+        // 两个原因叠在一起：
+        //   ① `makeKeyAndOrderFront` 之后立刻 sendEvent，窗口还没真正成为 key，
+        //      第一次点击被系统拿去激活窗口，事件落不到 webview；
+        //   ② 从没发过 mouseMoved，页面没有这个坐标的 hover 状态，
+        //      React 的 onMouseEnter 不触发、WebKit 的 tracking area 也没建立。
+        // 所以：先补一次 mouseMoved，等 0.12 秒，然后才 down/up。
+        let now = ProcessInfo.processInfo.systemUptime
+        if let move = NSEvent.mouseEvent(
+                with: .mouseMoved, location: inWindow, modifierFlags: [],
+                timestamp: now, windowNumber: w.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 0, pressure: 0) {
+            w.sendEvent(move)
+        }
+        Thread.sleep(forTimeInterval: 0.12)
+
+        guard let down = NSEvent.mouseEvent(
+                with: .leftMouseDown, location: inWindow, modifierFlags: [],
+                timestamp: now + 0.12, windowNumber: w.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1.0),
+              let up = NSEvent.mouseEvent(
+                with: .leftMouseUp, location: inWindow, modifierFlags: [],
+                timestamp: now + 0.18, windowNumber: w.windowNumber, context: nil,
+                eventNumber: 1, clickCount: 1, pressure: 0.0)
+        else { return false }
 
         w.sendEvent(down)
         Thread.sleep(forTimeInterval: 0.06)
