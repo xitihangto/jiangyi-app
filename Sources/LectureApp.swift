@@ -991,14 +991,19 @@ struct UploadCard: View {
     private var actionRow: some View {
         HStack(spacing: 9) {
             plusButton
-            Group {
-                if let url = url {
-                    fileCard(url)
-                } else {
-                    emptyHint
-                }
+            if let url = url {
+                fileCard(url)
+            } else {
+                // 空着也要撑满：否则 HStack 的宽度只等于加号，overlay 的「中心」会跑到左边去
+                Color.clear.frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity)
+        }
+        // 大字提示**相对整卡绝对居中**（用户 2026-10-29 第 19 轮：不是相对「加号右边那块」居中）。
+        // overlay 的宽度等于整个 actionRow（含加号），center 天然就是整卡中心。
+        .overlay(alignment: .center) {
+            if url == nil {
+                emptyHint
+            }
         }
     }
 
@@ -1008,16 +1013,18 @@ struct UploadCard: View {
             state.keepPasteArmed(slot)
             state.chooseFile(for: slot)
         } label: {
+            // 用户 2026-10-29 第 19 轮：边长宽都加大 30%（46 → 60），图标跟着 17 → 22，
+            // 圆角同比例 11 → 14。框因此变高、主页跟着往下推，用户说都接受。
             Image(systemName: "plus")
-                .font(.system(size: 17, weight: .medium))
+                .font(.system(size: 22, weight: .medium))
                 .foregroundStyle(Color.brandBlue.opacity(plusHover ? 1 : 0.8))
-                .frame(width: 46, height: 46)
+                .frame(width: 60, height: 60)
                 .background(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .fill(Color.brandBlue.opacity(plusHover ? 0.13 : 0.06))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(Color.brandBlue.opacity(plusHover ? 0.6 : 0.32),
                                       lineWidth: 1)
                 )
@@ -1040,7 +1047,6 @@ struct UploadCard: View {
             .foregroundStyle(armed ? Color.brandBlue : Color.secondary)
             .lineLimit(1)
             .minimumScaleFactor(0.85)
-            .frame(maxWidth: .infinity)
             .allowsHitTesting(false)
             .transition(.opacity)
     }
@@ -1049,24 +1055,25 @@ struct UploadCard: View {
 
     /// 只有一个文件，所以不用三等分：整张卡铺满加号右边的全部宽度，
     /// 左边文档图标、中间文件名 + 大小、右边一个叉。用户 2026-10-29 第 17 轮：
-    /// 「预览卡可以大到边框」。高度和加号对齐（46），两个框高度不会因为有没有文件而跳。
+    /// 「预览卡可以大到边框」。高度跟加号一起改成 60（第 19 轮加号 +30%），
+    /// 两个框高度不会因为有没有文件而跳。
     private func fileCard(_ url: URL) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color.brandBlue.opacity(0.10))
-                    .frame(width: 32, height: 32)
+                    .frame(width: 42, height: 42)
                 Image(systemName: "doc.text.fill")
-                    .font(.system(size: 14))
+                    .font(.system(size: 18))
                     .foregroundStyle(Color.brandBlue)
             }
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(url.lastPathComponent)
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(.system(size: 14, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text("\(fileSize) KB · 点框粘贴替换，或拖入新文件")
-                    .font(.system(size: 10.5))
+                    .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -1075,9 +1082,9 @@ struct UploadCard: View {
                 state.clearFile(for: slot)
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 20, height: 20)
+                    .frame(width: 22, height: 22)
                     .background(Circle().fill(Color.brandPink))
                     .shadow(color: Color.brandPink.opacity(isCloseHover ? 0.4 : 0.3),
                             radius: isCloseHover ? 4 : 3,
@@ -1090,26 +1097,26 @@ struct UploadCard: View {
             .onHover { isCloseHover = $0 }
             .help("移除这个文件")
         }
-        .padding(.horizontal, 10)
-        .frame(height: 46)
+        .padding(.horizontal, 12)
+        .frame(height: 60)
         .frame(maxWidth: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color.primary.opacity(fileHover ? 0.085 : 0.045))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.brandBlue.opacity(fileHover ? 0.45 : 0),
                               lineWidth: 1)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.secondary.opacity(0.14), lineWidth: 1)
                 .opacity(fileHover ? 0 : 1)
         )
-        // 用户 2026-10-29 第 18 轮：卡片要有预览。点卡片 = 系统 QuickLook 看 docx 内容，
+        // 用户 2026-10-29 第 18 轮：卡片要有预览。点卡片 = 放大看 docx 内容，
         // 点叉 = 移除，两者不冲突（Button 会先吃掉点击）。
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onTapGesture { state.openPreview(url) }
         .onHover { fileHover = $0 && !state.isRunning }
         .animation(.easeOut(duration: 0.12), value: fileHover)
@@ -1117,15 +1124,18 @@ struct UploadCard: View {
     }
 }
 
-// MARK: - 文件预览（QuickLook）
+// MARK: - 文件预览（照搬文章批改 app 的 PreviewPanel）
 
-/// 系统 QuickLook 的 SwiftUI 包装。讲义只有 docx，交给系统渲染比自己做省事得多，
-/// 而且和访达里按空格预览看到的是同一套效果 —— 用户想确认「选对文件了吗」一眼就能看出来。
+/// 系统 QuickLook 的 SwiftUI 包装（和文章版 `QuickLookPreview` 是同一个东西）。
+/// 讲义只有 docx，交给系统渲染比自己做省事得多 —— 和访达里按空格看到的是同一套效果，
+/// 由系统自带的 Office.qlgenerator 出图，不需要装 Office。
 struct QuickLookView: NSViewRepresentable {
     let url: URL
 
     func makeNSView(context: Context) -> NSView {
-        guard let view = QLPreviewView(frame: .zero, style: .normal) else { return NSView() }
+        // 这个初始化器签名是可失败的，真拿不到就给个空视图兜住，别让整个界面炸掉
+        guard let view = QLPreviewView(frame: NSRect(x: 0, y: 0, width: 529, height: 552),
+                                       style: .normal) else { return NSView() }
         view.autostarts = true
         view.previewItem = url as NSURL
         return view
@@ -1133,56 +1143,116 @@ struct QuickLookView: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let view = nsView as? QLPreviewView else { return }
+        guard (view.previewItem as? URL) != url else { return }
         view.previewItem = url as NSURL
+        view.refreshPreviewItem()
     }
 }
 
-/// 点文件卡弹出的大预览：压暗背景、点任意处关闭（用户 2026-10-29 第 18 轮要求）。
-/// 文章版那张卡片点开能放大看内容，讲义这边也要能看。
+/// 点文件卡弹出的放大预览（用户 2026-10-29 第 19 轮：「预览逻辑先照搬 article 的 app」）。
+///
+/// 结构和文章版一模一样：顶部信息栏（图标 + 文件名 + 类型·大小 + 右上角叉）→ Divider →
+/// QuickLook 真渲染的正文 → 底部文件名胶囊 + 一句关闭提示。
+/// 尺寸按用户要求整体放大 15%：460×480 → **529×552**，信息栏 34 → 39，圆角 14 → 16。
+///
+/// 交互也照搬：
+/// - 点面板外面 / 点信息栏 / 点右上角的 ✕ / 按 Esc → 关闭
+/// - **正文区域本身不接「点一下关闭」**，否则翻页和滚动会被吃掉
 struct FilePreviewPanel: View {
     let url: URL
-    let onClose: () -> Void
+    let close: () -> Void
+
+    private var sizeText: String {
+        let bytes = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
+        return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.35)
-                .onTapGesture { onClose() }
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Image(systemName: "doc.text.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.brandBlue)
-                    Text(url.lastPathComponent)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 10)
-                    Button { onClose() } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                            .background(Circle().fill(Color.primary.opacity(0.07)))
-                    }
-                    .buttonStyle(.plain)
-                    .handCursor()
-                    .help("关闭预览")
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                Divider()
-                QuickLookView(url: url)
+            Color.black.opacity(0.16)
+                .transition(.opacity)
+            VStack(spacing: 8) {
+                documentPreview
+                Text("\(url.lastPathComponent) · \(sizeText)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Color.black.opacity(0.42)))
+                Text("点右上角的 ✕ 或面板外面关闭")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.white.opacity(0.7))
             }
-            .frame(width: 540, height: 620)
-            .background(Color(nsColor: .windowBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.28), radius: 26, y: 12)
+            // 592 的面板 + 底部两行说明在 720 高的窗口里本来就快满了，
+            // 所以外边距用 14 而不是文章版的 18，别让底部提示被裁掉。
+            .padding(14)
+            .transition(.scale(scale: 0.62).combined(with: .opacity))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { close() }
+    }
+
+    private var documentPreview: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.brandBlue)
+                Text(url.lastPathComponent)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                Text("Word 文档 · \(sizeText)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.leading, 14)
+            // 右边多留 41：给内层右上角那个大叉让位，别让类型文字钻到叉底下
+            .padding(.trailing, 41)
+            .frame(height: 39)
+            .contentShape(Rectangle())
+            .onTapGesture { close() }
+
+            Divider()
+
+            QuickLookView(url: url)
+                .frame(width: 529, height: 552)
+        }
+        .frame(width: 529)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 1)
+        )
+        .overlay(alignment: .topTrailing) { closeButton.padding(9) }
+        .shadow(color: .black.opacity(0.24), radius: 25, y: 9)
+    }
+
+    /// 内层右上角的大叉：**白底 + 深色叉**，描一圈淡灰边，压在浅色文档上也看得见。
+    private var closeButton: some View {
+        Button {
+            close()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Color.black.opacity(0.72))
+                .frame(width: 25, height: 25)
+                .background(Circle().fill(Color.white))
+                .overlay(Circle().strokeBorder(Color.black.opacity(0.14), lineWidth: 0.8))
+                .shadow(color: .black.opacity(0.20), radius: 3, y: 1)
+        }
+        .buttonStyle(.plain)
+        .handCursor()
+        .help("关闭预览")
     }
 }
 
