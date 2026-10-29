@@ -1058,6 +1058,42 @@ dist/讲义生成.app/Contents/MacOS/LectureGen --dupetest
 
 ---
 
+### 5.28 ⏳ 上传框目录互相同步（2026-10-29，**临时记录，待推送**）
+
+> 用户第 16 轮要求：先编译、记待办，等他说推的时候一起推；**推送后本节改成正式记录并删掉 §7 的待办**。
+
+**需求**：两个上传框（考卷 / 答案）的「上次打开面板的目录」必须互相同步 ——
+在框 1 里选定了目录和文件，框 2 下次打开面板要直接落在同一个目录；
+关掉 App 重开还记得；直到用户又选了别的目录，再重新同步一次。
+
+**原来的问题**：`AppState.rememberDirectory` 只写本框的键（`pickDir.exam` / `pickDir.answer`）
+和老的共享键 `pickDir.shared`，**不写另一个框的键**。而 `startDirectory` 是
+「本框优先 → 另一个框 → 共享 → 下载目录」——只要另一个框自己记过目录，本框就永远继承不到新的。
+
+**改法**（`Sources/AppState.swift`）：
+
+```swift
+private func rememberDirectory(_ url: URL, slot: Slot) {
+    let dir = url.deletingLastPathComponent().path
+    let ud = UserDefaults.standard
+    ud.set(dir, forKey: AppState.dirKey(slot))
+    ud.set(dir, forKey: AppState.dirKey(slot == .exam ? .answer : .exam))  // ← 新增：另一个框立刻继承
+    ud.set(dir, forKey: "pickDir.shared")
+}
+```
+
+两个键从此恒等，「本框优先」退化成纯容错（某个目录被删/挪走时还能退到别处）。
+`startDirectory` 逻辑没动。
+
+另外把 `chooseFile` 的回调改成**先记目录、再收文件**（原来讲义是 `accept` 内部记、
+作文是 `acceptBatch` 之后记）：哪怕文件因为类型不对被拒，「用户导航到了哪个目录」
+这个事实也该记住并同步。
+
+**版本**：未升版（按 §10 约定，日常改动沿用当前版本号，用户说发布才升）。
+本地已 `./build.sh --install`，**未推 GitHub**。
+
+---
+
 ## 6. DeepSeek 网页真实结构（实测，别猜）
 
 来源：`~/Desktop/讲义生成-DOM快照-*.json`（用户导出的真实快照）
@@ -1104,6 +1140,8 @@ dist/讲义生成.app/Contents/MacOS/LectureGen --dupetest
 
 > 用户亲口定的三条：2.1 已实现的就不改了（代码和界面都不动）；2.2 “失败后只重跑脚本”彻底删除；
 > 2.3 仍未实现的全部删除（尤其深色模式），只保留现有界面。**下面“已删除”里的项不要再捡回来做，除非用户重新下令。**
+>
+> 唯一的例外是「⏳ 待推送」一节：用户让先改先编译、攒着等命令一起推时，临时记在那里，**推完即删**。
 
 ### ✅ 已完成：内置浏览器彻底隐形（v0.14）
 
@@ -1127,6 +1165,12 @@ dist/讲义生成.app/Contents/MacOS/LectureGen --dupetest
 - ~~登录窗口手动关闭时 `browserShownForLogin` 的兜底~~、~~`generating` 改用 SVG path 特征检测~~
 - ~~提示词可在界面上编辑~~、~~内置附件丢失时的更具体提示~~
 - ~~导出页面结构快照~~：v0.20 已从菜单、代码、JS 里全部删除，见 §5.13④
+
+### ⏳ 待推送（用户 2026-10-29 第 16 轮：先编译、先记着，等他说推再一起推）
+
+- [ ] **上传框目录互相同步**（改动见 §5.28，已编译安装，未推 GitHub）
+  - 推送时要做：①升 `CFBundleShortVersionString` ②`git push origin main` + `git push origin vX.Y`
+    ③把 §5.28 标题里的「⏳ 临时记录，待推送」去掉、改成正式记录 ④删掉本条待办
 
 ### 仍需验收（只观察，不改代码）
 - 真实登录页面验收深度思考+智能搜索自动激活（见 §5.12④）
