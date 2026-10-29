@@ -1688,12 +1688,16 @@ struct LogPanel: View {
     @EnvironmentObject var state: AppState
     let onClose: () -> Void
 
+    /// 复制后 1.6 秒内按钮显示「已复制」，给个明确的反馈
+    @State private var copied = false
+
     private var lines: [String] { state.progressLines }
     private var scriptOutput: String { state.scriptOutput }
 
-    /// 压暗层高度 = 520。面板本身到 20+500=520 为止，Word 卡顶边在 538 左右，
-    /// 中间留 18pt 空隙 —— 少留一点压暗层就会压到 Word 卡上，那一小条会被当成「点面板外面」。
-    private let scrimHeight: CGFloat = 520
+    /// 压暗层高度 = 720 - 172。172 是底部留给 Word 卡（标题行 + 说明 + 按钮行）的高度，
+    /// 少留一点就会压到「详情」按钮上。
+    /// （2026-10-29 对齐试卷识别版：原来这里是 520，比试卷版矮一截，面板和压暗层都跟着改回来。）
+    private let scrimHeight: CGFloat = 548
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -1714,7 +1718,7 @@ struct LogPanel: View {
             Divider()
             logList
         }
-        .frame(width: 566, height: 500)
+        .frame(width: 566, height: 516)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
             .fill(Color(nsColor: .windowBackgroundColor)))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -1734,6 +1738,30 @@ struct LogPanel: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
             Spacer()
+
+            // 一键拷全部（2026-10-29 对齐试卷识别版）。
+            // 每行是独立 Text，SwiftUI 的跨行拖选会被打断，只能一行一行选 ——
+            // 用户要截图两次以上才拿得全，所以给个按钮。
+            Button(action: copyAll) {
+                HStack(spacing: 4) {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 9, weight: .bold))
+                    Text(copied ? "已复制" : "复制全部")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+                .foregroundStyle(Color.black.opacity(0.72))
+                .padding(.horizontal, 9)
+                .frame(height: 22)
+                .background(Capsule().fill(Color.white))
+                .overlay(Capsule().strokeBorder(Color.black.opacity(0.14), lineWidth: 0.8))
+                .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+            }
+            .buttonStyle(.plain)
+            .handCursor()
+            .disabled(lines.isEmpty && scriptOutput.isEmpty)
+            .opacity(lines.isEmpty && scriptOutput.isEmpty ? 0.45 : 1)
+            .help("把整份日志拷到剪贴板（含脚本输出）")
+
             // 叉按钮统一白底黑字（用户 2026-10-27 定的规矩，系统级的除外）
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -1750,6 +1778,23 @@ struct LogPanel: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    /// 把面板里看到的东西原样拷进剪贴板：日志行 + 分隔线 + 脚本输出。
+    /// 顺序和界面一致，贴到别处不用再拼。
+    private func copyAll() {
+        var parts = lines
+        if !scriptOutput.isEmpty {
+            if !parts.isEmpty { parts.append("") }
+            parts.append("—— 脚本输出 ——")
+            parts.append(scriptOutput)
+        }
+        guard !parts.isEmpty else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(parts.joined(separator: "\n"), forType: .string)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copied = false }
     }
 
     private var logList: some View {

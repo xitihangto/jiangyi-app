@@ -1241,6 +1241,68 @@ overlay 宽度等于整卡内容宽，center 天然就是整卡中心。
 
 ---
 
+### 5.30 ⏳ 「详情」链路对齐试卷识别版（2026-10-29，**临时记录，待推送**）
+
+用户要求：「检查讲义和文章 app 的详情按钮的背后代码逻辑，是否和 exam 一样，如果不一样，重写」。
+逐行比过三个 App 之后，**大体一样、三处不一样**，已按试卷版补齐。
+
+#### 一样的部分（不动）
+
+- 「详情」按钮：位置（Word 卡标题行）、`text.alignleft` 图标 9pt + 文案 11pt、
+  胶囊底 + hover 叠层、`state.showLog ? "收起" : "详情"`、`help` 文案、
+  **只在 `!progressLines.isEmpty` 时出现**
+- `openLog` / `closeLog` / `toggleLog` 三个方法（`easeOut(0.18)` + 动画）
+- `LogPanel` 的骨架：压暗层只铺上半屏（**不许盖住自己的开关**）、点压暗层关闭、
+  点叉关闭、`Esc` 关闭（在 `installPasteMonitor` 的 `keyDown` 里，顺序：关日志 → 关预览 → 退粘贴）
+- 日志列表：等宽 10.5pt、`textSelection(.enabled)`、`onAppear` + `onReceive($progressLines)` 自动滚到底、
+  `tint()` 着色规则（`✗` 红、`⚠️` / `还没出现` 橙、其余正文色）
+- `docx` 的 `didSet`：失败时往日志补一行 `✗ 生成失败：…`
+- 失败时只改一行字、不换按钮、不弹面板、不导 md/截图
+
+#### 不一样的三处（已补齐）
+
+| 项 | 试卷识别 | 讲义（改前） | 处理 |
+|---|---|---|---|
+| `log()` 时间戳 + 间隔 | ✅ `HH:mm:ss +N.Ns` | ❌ 裸文本 | **补齐** |
+| LogPanel「复制全部」 | ✅ | ❌ | **补齐** |
+| 面板尺寸 | 566×516 / 压暗层 548 | 566×**500** / 压暗层 **520** | **改成 516 / 548** |
+| `autoOpenLogWhileTesting` | ✅（`false`） | ❌ | **补齐**（默认 false，行为无变化） |
+
+#### ① `log()` 加时间戳
+
+```swift
+var lastLogAt: Date?
+private static let logClock: DateFormatter = { … "HH:mm:ss" … }()
+
+func log(_ line: String) {
+    …
+    var prefix = Self.logClock.string(from: now)
+    if let last = lastLogAt { prefix += String(format: " +%4.1fs", now.timeIntervalSince(last)) }
+    lastLogAt = now
+    progressLines.append("\(prefix) \(line)")
+}
+```
+
+`runPipeline()` 开头加 `lastLogAt = nil` —— 新一轮从零计时，别把上一轮的间隔带过来。
+
+这是试卷版 2026-10-29 上午为了定位「上传慢」加的：没有时间戳只能看到一长串步骤，
+看不出哪一步吃掉了时间。讲义这边一直没跟上，属于「排查能力缺失」。
+
+#### ② LogPanel 加「复制全部」
+
+每行是独立 `Text`，SwiftUI 的跨行拖选会被打断，只能一行一行选 —— 用户要截图两次以上才拿得全。
+按钮：白底胶囊 + 深色字，点完 1.6 秒显示「已复制」；没有日志时禁用并降到 0.45 透明度。
+`copyAll()` 把日志行 + 空行 + `—— 脚本输出 ——` + 脚本输出拼起来塞剪贴板，顺序和界面一致。
+
+#### ③ 面板高度改回 516 / 548
+
+讲义原来是 500 / 520，比试卷版矮一截。改回后压暗层仍然停在 Word 卡上方，
+「详情」按钮永远点得到（这条约束没变）。
+
+**版本**：未升版，**未推 GitHub**。
+
+---
+
 ## 6. DeepSeek 网页真实结构（实测，别猜）
 
 来源：`~/Desktop/讲义生成-DOM快照-*.json`（用户导出的真实快照）
@@ -1321,6 +1383,8 @@ overlay 宽度等于整卡内容宽，center 天然就是整卡中心。
 - [ ] **上传框支持粘贴 + 预览卡铺满框宽**（改动见 §5.29，已编译安装，未推 GitHub）
   - 推送时要做：同上四步；另外**真实交互还没验**（⌘V / 右键菜单 / 点框外取消），
     最好让用户先点一遍再推
+- [ ] **「详情」链路对齐试卷识别版**（改动见 §5.30，已编译安装，未推 GitHub）
+  - 推送时要做：同上四步
 
 ### 仍需验收（只观察，不改代码）
 - 真实登录页面验收深度思考+智能搜索自动激活（见 §5.12④）

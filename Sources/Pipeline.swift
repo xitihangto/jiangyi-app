@@ -48,7 +48,10 @@ extension AppState {
         isRunning = true
         stopRequested = false
         progressLines = []
+        lastLogAt = nil          // 新一轮从零计时，别把上一轮的间隔带过来
         docx = .idle
+        // 测试期：开跑就把日志摊开，跑的过程中能一直看着（正式行为是 false）
+        if Self.autoOpenLogWhileTesting { openLog() }
 
         // 先把两个文件拷到局部变量，再把上传框清空 —— 顺序反了就拿不到文件了。
         let exam = examURL

@@ -164,9 +164,28 @@ final class AppState: ObservableObject {
     }
 
     /// 技术日志：只进内存，不再往界面上贴
+    ///
+    /// 每行前面带 `HH:mm:ss +N.Ns`：时间戳 + 离上一行过了多久（用户 2026-10-29 在试卷识别版定的，
+    /// 为了「到底哪一段慢」一眼可见 —— 没有时间戳只能看到一长串步骤，看不出哪一步吃掉了时间）。
+    /// 讲义这版 2026-10-29 对齐试卷版时补上。
+    ///
+    /// 上一行日志的时间，用来算「这一行离上一行过了多久」。
+    var lastLogAt: Date?
+    private static let logClock: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
     func log(_ line: String) {
         if Thread.isMainThread {
-            progressLines.append(line)
+            let now = Date()
+            var prefix = Self.logClock.string(from: now)
+            if let last = lastLogAt {
+                prefix += String(format: " +%4.1fs", now.timeIntervalSince(last))
+            }
+            lastLogAt = now
+            progressLines.append("\(prefix) \(line)")
             if progressLines.count > 400 { progressLines.removeFirst(200) }
         } else {
             DispatchQueue.main.async { self.log(line) }
@@ -1086,6 +1105,11 @@ final class AppState: ObservableObject {
     func toggleLog() {
         if showLog { closeLog() } else { openLog() }
     }
+
+    /// 测试期开关：每次开始生成时自动把运行日志展开，不用再点「详情」。
+    /// **正式行为是 `false`**（只有点详情才出现）—— 这和试卷识别版一致。
+    /// 调试「到底卡在哪一步」时可以临时改 true，改完记得改回来。
+    static let autoOpenLogWhileTesting = false
 
     var pythonReady: Bool { PythonRunner.isAvailable }
 
