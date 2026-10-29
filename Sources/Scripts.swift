@@ -310,6 +310,44 @@ enum Scripts {
       }
       var pres=document.querySelectorAll('.md-code-block pre');
       if(!pres.length) pres=document.querySelectorAll('pre');
+      // ── 思考区排除（2026-10-29 试卷识别 14:29 事故的同一处代码，讲义这边原来没修）──
+      // 深度思考把推理过程也渲染成 markdown，里面同样有 .md-code-block pre。
+      // 那轮实测：AI 在思考里先写了一整份草稿，连 # ===EXAM-END=== 都打上了，
+      // App 把草稿当成最终答案抓走执行 —— 产出一份跟原卷毫无关系的假文档。
+      // 所以「量代码长度 / 判结束标记 / 抓代码」一律只看回答区，思考区的 pre 全部跳过。
+      function _wbIsThinking(el){
+        var n=el, hops=0;
+        while(n && n!==document.body && hops<12){
+          var cls='';
+          try{
+            cls=(n.getAttribute('class')||'')+' '+(n.getAttribute('data-testid')||'')
+                +' '+(n.id||'');
+          }catch(e){}
+          // 真名是 ds-think-content（从 App 的 WebKit 缓存里查到的）；
+          // 哈希类名是纯十六进制，不会误命中 think / reason。
+          if(/think|reason/i.test(cls)) return true;
+          // 换类名时兜底：可折叠容器的标题写着「深度思考 / 思考中」
+          try{
+            if(n.getAttribute('aria-expanded')!==null){
+              var lbl=(n.getAttribute('aria-label')||'')+' '+(n.getAttribute('title')||'')
+                      +' '+(n.textContent||'').slice(0,24);
+              if(/思考|think|reason/i.test(lbl)) return true;
+            }
+          }catch(e){}
+          n=n.parentElement; hops++;
+        }
+        return false;
+      }
+      var _all=[], thinkBlocks=0;
+      for(var q=0;q<pres.length;q++){
+        var _p=pres[q], _h=0;
+        try{ _h=_p.getBoundingClientRect().height; }catch(e){}
+        // 折叠起来的思考区高度是 0，顺带跳过（同样是换类名时的兜底）
+        if(_wbIsThinking(_p) || _h<1){ thinkBlocks++; continue; }
+        _all.push(_p);
+      }
+      pres=_all;
+      out.thinkBlocks=thinkBlocks;
       var total=0;
       for(var j=0;j<pres.length;j++){ total+=(pres[j].textContent||'').length; }
       out.pres=pres.length;
@@ -333,7 +371,10 @@ enum Scripts {
         out.codeTail=clean.slice(-90);
 
         // 【最强信号】AI 按提示词要求在最后一行打的结束标记
-        out.hasEndMark=/#\s*===LECTURE-END===/i.test(clean.slice(-300));
+        // ⚠️ 必须用未剥注释的 `code`，不能用上面的 `clean`：结束标记本身就是一行 `#` 注释，
+        // 而 clean 已经把尾部注释行全剥掉了，用 clean 判断永远匹配不上
+        // （2026-10-29 试卷识别那边实测：一轮 101 秒里白等 6 秒就是它，讲义这里是同一个坑）。
+        out.hasEndMark=/#\s*===LECTURE-END===/i.test(code.slice(-300));
 
         // 收尾标志一：末尾出现 .save(...) 调用（规则要求最后 doc.save，实测 AI 常写 b.save(OUT_NAME)）
         // 括号必须闭合，否则「b.save(OUT_NA」这种写了一半的也会算进来
@@ -480,10 +521,36 @@ enum Scripts {
         t=t.replace(/\s+$/,'');
         if(t.length>60 && arr.indexOf(t)<0) arr.push(t);
       }
+      // 思考区里的草稿绝对不能抓（2026-10-29 试卷识别抓错过一次，见 replyState 的注释）
+      function _wbIsThinking(el){
+        var n=el, hops=0;
+        while(n && n!==document.body && hops<12){
+          var cls='';
+          try{
+            cls=(n.getAttribute('class')||'')+' '+(n.getAttribute('data-testid')||'')
+                +' '+(n.id||'');
+          }catch(e){}
+          if(/think|reason/i.test(cls)) return true;
+          try{
+            if(n.getAttribute('aria-expanded')!==null){
+              var lbl=(n.getAttribute('aria-label')||'')+' '+(n.getAttribute('title')||'')
+                      +' '+(n.textContent||'').slice(0,24);
+              if(/思考|think|reason/i.test(lbl)) return true;
+            }
+          }catch(e){}
+          n=n.parentElement; hops++;
+        }
+        return false;
+      }
       var nodes=document.querySelectorAll('.md-code-block pre');
       if(!nodes.length) nodes=document.querySelectorAll('pre');
       if(!nodes.length) nodes=document.querySelectorAll('pre code');
-      for(var i=0;i<nodes.length;i++) push(nodes[i].textContent);
+      for(var i=0;i<nodes.length;i++){
+        var nd=nodes[i], h=0;
+        try{ h=nd.getBoundingClientRect().height; }catch(e){}
+        if(_wbIsThinking(nd) || h<1) continue;
+        push(nd.textContent);
+      }
       return JSON.stringify(arr);
     })());
     window.__wbCode.length
