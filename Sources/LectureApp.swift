@@ -801,11 +801,14 @@ struct Backdrop: View {
 // MARK: - 上传卡片
 
 /// 一个框只放一个文件，所以不用文章版那套「三等分占位」：
-/// 有文件时直接给一张**铺满框宽**的文件卡（用户 2026-10-29 第 17 轮：「预览卡可以大到边框」）。
+/// 有文件时直接给一张**铺满加号右侧全部宽度**的文件卡（用户 2026-10-29 第 17 轮：「预览卡可以大到边框」）。
 ///
-/// 交互照文章批改 app（同日用户要求）：
-/// - 点框内 → 进入「等待粘贴」态（蓝边 + 浅蓝底 + 标题行里冒出蓝色提示）
-/// - 加号 → 开文件面板；⌘V → 粘贴；右键 → 「粘贴 / 取消」小菜单
+/// 排版和交互都照文章批改 app（用户同日贴截图要求「参照它的位置」）：
+///   第 1 行  标题 + ＊必选（激活时中间冒出蓝色提示）
+///   第 2 行  副标题：支持哪些格式
+///   第 3 行  [加号] + 右侧内容（空框是居中提示，有文件是铺满的文件卡）
+/// - 点框内 → 进入「等待粘贴」态（蓝边 + 浅蓝底 + 标题行中间冒出蓝色提示）
+/// - 左下角加号 → 开文件面板；⌘V → 粘贴；右键 → 「粘贴 / 取消」小菜单
 /// - 点框外 / Esc → 取消激活
 struct UploadCard: View {
     @EnvironmentObject var state: AppState
@@ -835,20 +838,21 @@ struct UploadCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // 排版照文章批改 app（用户 2026-10-29 贴截图要求「参照它的位置」）：
+        //   第 1 行  标题 + ＊必选（激活时中间冒出蓝色提示）
+        //   第 2 行  副标题：支持哪些格式
+        //   第 3 行  [加号] + 右侧内容（空框是居中提示，有文件是铺满的文件卡）
+        // 加号在**左下角**，不是标题行右侧 —— 那是文章版的固定位置。
+        VStack(alignment: .leading, spacing: 11) {
             header
-            if let url = url {
-                fileCard(url)
-            } else {
-                emptyHint
-            }
+            actionRow
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 13)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         // 点框内一律「激活等待粘贴」，不再直接开面板（用户 2026-10-29 第 17 轮：
-        // 框内逻辑照文章批改 app）。开面板走右上角那个加号。
+        // 框内逻辑照文章批改 app）。开面板走左下角那个加号。
         .onTapGesture {
             guard !state.isRunning else { return }
             state.armPaste(slot)
@@ -939,33 +943,57 @@ struct UploadCard: View {
         }
     }
 
-    // MARK: 标题行
+    // MARK: 标题区（标题行 + 副标题行）
 
     private var header: some View {
-        HStack(spacing: 6) {
-            Text(title)
-                .font(.system(size: 14.5, weight: .semibold))
-            if active {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.green.opacity(0.9))
-            } else {
-                Text("＊必选")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(Color.brandPink)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.system(size: 14.5, weight: .semibold))
+                if active {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.green.opacity(0.9))
+                } else {
+                    Text("＊必选")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Color.brandPink)
+                }
+                Spacer(minLength: 8)
             }
-            // 激活态提示直接跟在标题后面（不叠 overlay 居中）——
-            // 这一行右边有加号，居中的话会撞上。
-            if armed {
-                Text("按 ⌘V 或者右键粘贴，或拖入文件")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(Color.brandBlue)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .transition(.opacity)
+            // 激活提示叠在标题行**正中**（照文章版）：加号已经挪到下一行，
+            // 这一行只剩标题和「＊必选」，居中不会撞上任何东西。
+            .overlay(alignment: .center) {
+                if armed {
+                    Text("按 ⌘V 或者右键粘贴，或拖入文件")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Color.brandBlue)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .transition(.opacity)
+                }
             }
-            Spacer(minLength: 8)
+            Text(subtitle)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.9)
+        }
+    }
+
+    // MARK: 加号 + 内容（照文章版：加号在左下角）
+
+    private var actionRow: some View {
+        HStack(spacing: 9) {
             plusButton
+            Group {
+                if let url = url {
+                    fileCard(url)
+                } else {
+                    emptyHint
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -975,27 +1003,19 @@ struct UploadCard: View {
             state.keepPasteArmed(slot)
             state.chooseFile(for: slot)
         } label: {
-            // 用户 2026-10-29：光一个 + 号看不出来是干什么的 —— 点框现在只激活粘贴，
-            // 开面板只剩这一个入口，必须写清楚。图标 + 「选择文件」一起做成小胶囊。
-            HStack(spacing: 4) {
-                Image(systemName: "plus")
-                    .font(.system(size: 10.5, weight: .semibold))
-                Text("选择文件")
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .foregroundStyle(Color.brandBlue.opacity(plusHover ? 1 : 0.85))
-            .padding(.horizontal, 9)
-            .frame(height: 26)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.brandBlue.opacity(plusHover ? 0.13 : 0.07))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(Color.brandBlue.opacity(plusHover ? 0.6 : 0.30),
-                                  lineWidth: 1)
-            )
-            .contentShape(Rectangle())
+            Image(systemName: "plus")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(Color.brandBlue.opacity(plusHover ? 1 : 0.8))
+                .frame(width: 46, height: 46)
+                .background(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(Color.brandBlue.opacity(plusHover ? 0.13 : 0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Color.brandBlue.opacity(plusHover ? 0.6 : 0.32),
+                                      lineWidth: 1)
+                )
         }
         .buttonStyle(.plain)
         .handCursor()
@@ -1005,38 +1025,35 @@ struct UploadCard: View {
         .help("选择文件")
     }
 
-    // MARK: 空框
+    // MARK: 空框提示
 
     private var emptyHint: some View {
-        VStack(spacing: 5) {
-            Text(subtitle)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-            // 拖放早就支持了，只写粘贴的话用户看不出来还能拖（用户 2026-10-29 第 16 轮
-            // 在文章版指出过同一处漏字，这里一并写全）。
-            Text("点击此处可粘贴，或将文件拖入")
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(armed ? Color.brandBlue : Color.secondary.opacity(0.85))
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 9)
+        // 拖放早就支持了，只写粘贴的话用户看不出来还能拖（用户 2026-10-29 第 16 轮
+        // 在文章版指出过同一处漏字，这里一并写全）。
+        Text("点击此处可粘贴，或将文件拖入")
+            .font(.system(size: 14))
+            .foregroundStyle(armed ? Color.brandBlue : Color.secondary)
+            .frame(maxWidth: .infinity)
+            .allowsHitTesting(false)
+            .transition(.opacity)
     }
 
-    // MARK: 文件卡（铺满框宽）
+    // MARK: 文件卡（铺满右侧可用宽度）
 
-    /// 只有一个文件，所以不用三等分：整张卡铺满框宽，左边文档图标、中间文件名 + 大小、
-    /// 右边一个叉。用户 2026-10-29 第 17 轮：「预览卡可以大到边框」。
+    /// 只有一个文件，所以不用三等分：整张卡铺满加号右边的全部宽度，
+    /// 左边文档图标、中间文件名 + 大小、右边一个叉。用户 2026-10-29 第 17 轮：
+    /// 「预览卡可以大到边框」。高度和加号对齐（46），两个框高度不会因为有没有文件而跳。
     private func fileCard(_ url: URL) -> some View {
         HStack(spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color.brandBlue.opacity(0.10))
-                    .frame(width: 36, height: 36)
+                    .frame(width: 32, height: 32)
                 Image(systemName: "doc.text.fill")
-                    .font(.system(size: 15))
+                    .font(.system(size: 14))
                     .foregroundStyle(Color.brandBlue)
             }
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(url.lastPathComponent)
                     .font(.system(size: 12.5, weight: .medium))
                     .lineLimit(1)
@@ -1067,7 +1084,7 @@ struct UploadCard: View {
             .help("移除这个文件")
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .frame(height: 46)
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
