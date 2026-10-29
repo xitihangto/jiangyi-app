@@ -1303,6 +1303,36 @@ func log(_ line: String) {
 
 ---
 
+### 5.31 ⏳ 标题栏分割线固化（2026-10-29，**临时记录，待推送**）
+
+用户要求：「作文与讲义 app 标题栏分割线固化（直接照抄 exam）」。
+
+原来本工程只有 `window.titleVisibility = .hidden`，**没有** `titlebarSeparatorStyle = .none`，
+也没有自己画线 —— 所以红绿灯下面那条线完全靠系统，只在滚动 / 鼠标悬停时才出现。
+
+照抄试卷识别版的两步：
+
+1. `WindowCloseAccessor` 的 **make 和 update 两处**都加 `window.titlebarSeparatorStyle = .none`
+   （关掉系统那条，免得和自绘的叠成两条）
+2. `ContentView` 在 `.frame(width: 620, height: 720)` 之后加：
+
+```swift
+.overlay(alignment: .top) {
+    Rectangle()
+        .fill(Color(nsColor: .separatorColor))
+        .frame(height: 1)
+        .allowsHitTesting(false)
+}
+```
+
+**为什么不用 `titlebarSeparatorStyle = .line`**：窗口为了只留红绿灯把 `titleVisibility` 设成了
+`.hidden`，这种「标题栏透明、内容顶到窗口顶部」的形态下系统只按 `.automatic` 走，`.line` 压不住。
+自己画一条 1px 的，位置正好在内容区最顶端 = 标题栏底边，颜色用系统 `.separatorColor` 明暗自适应。
+
+**版本**：未升版，**未推 GitHub**。
+
+---
+
 ## 6. DeepSeek 网页真实结构（实测，别猜）
 
 来源：`~/Desktop/讲义生成-DOM快照-*.json`（用户导出的真实快照）
@@ -1384,6 +1414,8 @@ func log(_ line: String) {
   - 推送时要做：同上四步；另外**真实交互还没验**（⌘V / 右键菜单 / 点框外取消），
     最好让用户先点一遍再推
 - [ ] **「详情」链路对齐试卷识别版**（改动见 §5.30，已编译安装，未推 GitHub）
+  - 推送时要做：同上四步
+- [ ] **标题栏分割线固化**（改动见 §5.31，已编译安装，未推 GitHub）
   - 推送时要做：同上四步
 
 ### 仍需验收（只观察，不改代码）
