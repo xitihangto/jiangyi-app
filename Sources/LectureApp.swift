@@ -975,19 +975,27 @@ struct UploadCard: View {
             state.keepPasteArmed(slot)
             state.chooseFile(for: slot)
         } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.brandBlue.opacity(plusHover ? 1 : 0.8))
-                .frame(width: 26, height: 26)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.brandBlue.opacity(plusHover ? 0.13 : 0.07))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(Color.brandBlue.opacity(plusHover ? 0.6 : 0.30),
-                                      lineWidth: 1)
-                )
+            // 用户 2026-10-29：光一个 + 号看不出来是干什么的 —— 点框现在只激活粘贴，
+            // 开面板只剩这一个入口，必须写清楚。图标 + 「选择文件」一起做成小胶囊。
+            HStack(spacing: 4) {
+                Image(systemName: "plus")
+                    .font(.system(size: 10.5, weight: .semibold))
+                Text("选择文件")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(Color.brandBlue.opacity(plusHover ? 1 : 0.85))
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.brandBlue.opacity(plusHover ? 0.13 : 0.07))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Color.brandBlue.opacity(plusHover ? 0.6 : 0.30),
+                                  lineWidth: 1)
+            )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .handCursor()
