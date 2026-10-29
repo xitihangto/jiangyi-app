@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Quartz          // QLPreviewView：点文件卡直接预览 docx 内容
 
 // MARK: - 品牌色
 
@@ -375,6 +376,12 @@ struct ContentView: View {
             }
         }
         .overlay {
+            // 文件预览：放在两个确认框**之前**（overlay 后加的在上层，所以这样确认框会盖住它）
+            if let url = state.previewURL {
+                FilePreviewPanel(url: url) { state.closePreview() }
+            }
+        }
+        .overlay {
             if showExitConfirm {
                 exitConfirmOverlay
             }
@@ -402,10 +409,12 @@ struct ContentView: View {
     private func installPasteMonitor() {
         guard pasteMonitor == nil else { return }
         pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // Esc：先关日志，再退等待粘贴（都不吞事件，免得影响别的弹窗取消）
+            // Esc：先关日志，再关预览，最后退等待粘贴（都不吞事件，免得影响别的弹窗取消）
             if event.keyCode == 53 {
                 if state.showLog {
                     state.closeLog()
+                } else if state.previewURL != nil {
+                    state.closePreview()
                 } else if state.pasteArmed != nil {
                     state.pasteArmed = nil
                     state.closePasteMenu()
@@ -822,6 +831,8 @@ struct UploadCard: View {
     @State private var plusHover = false
     /// 整张上传卡的 hover：只在卡片上叠一层浅蓝提亮，不动玻璃本身
     @State private var cardHover = false
+    /// 文件卡 hover：提示「这张卡能点开预览」
+    @State private var fileHover = false
     /// 有文件正被拖到这张卡上方（用户 2026-10-29 第 11 轮加拖放）
     @State private var dropTargeted = false
 
@@ -838,12 +849,12 @@ struct UploadCard: View {
     }
 
     var body: some View {
-        // 排版照文章批改 app（用户 2026-10-29 贴截图要求「参照它的位置」）：
-        //   第 1 行  标题 + ＊必选（激活时中间冒出蓝色提示）
-        //   第 2 行  副标题：支持哪些格式
-        //   第 3 行  [加号] + 右侧内容（空框是居中提示，有文件是铺满的文件卡）
+        // 排版照文章批改 app（用户 2026-10-29 贴截图要求「参照它的位置」），
+        // 但压成**两行**（同日第二次要求：三行太占地方）：
+        //   第 1 行  标题 + ＊必选，副标题绝对居中叠在这一行
+        //   第 2 行  [加号] + 右侧内容（空框是居中大字提示，有文件是铺满的文件卡）
         // 加号在**左下角**，不是标题行右侧 —— 那是文章版的固定位置。
-        VStack(alignment: .leading, spacing: 11) {
+        VStack(alignment: .leading, spacing: 9) {
             header
             actionRow
         }
@@ -943,42 +954,36 @@ struct UploadCard: View {
         }
     }
 
-    // MARK: 标题区（标题行 + 副标题行）
+    // MARK: 标题行（副标题绝对居中叠在同一行）
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Text(title)
-                    .font(.system(size: 14.5, weight: .semibold))
-                if active {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.green.opacity(0.9))
-                } else {
-                    Text("＊必选")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(Color.brandPink)
-                }
-                Spacer(minLength: 8)
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 14.5, weight: .semibold))
+            if active {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.green.opacity(0.9))
+            } else {
+                Text("＊必选")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Color.brandPink)
             }
-            // 激活提示叠在标题行**正中**（照文章版）：加号已经挪到下一行，
-            // 这一行只剩标题和「＊必选」，居中不会撞上任何东西。
-            .overlay(alignment: .center) {
-                if armed {
-                    Text("按 ⌘V 或者右键粘贴，或拖入文件")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(Color.brandBlue)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .transition(.opacity)
-                }
-            }
+            Spacer(minLength: 8)
+        }
+        // 用户 2026-10-29：原来「标题 / 副标题 / 加号」三行太占地方，压成两行 ——
+        // 副标题**绝对居中**叠在标题这一行上，相对整卡宽度居中，不看左边已经有几个字。
+        // HStack 撑满整卡，所以 overlay 的 center 就是整卡中心。
+        .overlay(alignment: .center) {
             Text(subtitle)
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.9)
+                .minimumScaleFactor(0.85)
+                .allowsHitTesting(false)
         }
+        // 激活态的蓝色提示已经删掉（用户 2026-10-29：和下面那行大字重复了）。
+        // 现在激活只靠蓝边 + 浅蓝底 + 大字提示变色来体现。
     }
 
     // MARK: 加号 + 内容（照文章版：加号在左下角）
@@ -1028,11 +1033,13 @@ struct UploadCard: View {
     // MARK: 空框提示
 
     private var emptyHint: some View {
-        // 拖放早就支持了，只写粘贴的话用户看不出来还能拖（用户 2026-10-29 第 16 轮
-        // 在文章版指出过同一处漏字，这里一并写全）。
-        Text("点击此处可粘贴，或将文件拖入")
+        // 用户 2026-10-29：把「点击此处可粘贴，或将文件拖入」改写成把三种入口都写全 ——
+        // ⌘V 用 ⌘ 符号（不是 "cmd"），右键也是粘贴入口，最后才是拖入。
+        Text("点击此处可 ⌘V 或右键粘贴，也可拖入文件")
             .font(.system(size: 14))
             .foregroundStyle(armed ? Color.brandBlue : Color.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
             .frame(maxWidth: .infinity)
             .allowsHitTesting(false)
             .transition(.opacity)
@@ -1088,12 +1095,94 @@ struct UploadCard: View {
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.045))
+                .fill(Color.primary.opacity(fileHover ? 0.085 : 0.045))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.brandBlue.opacity(fileHover ? 0.45 : 0),
+                              lineWidth: 1)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.secondary.opacity(0.14), lineWidth: 1)
+                .opacity(fileHover ? 0 : 1)
         )
+        // 用户 2026-10-29 第 18 轮：卡片要有预览。点卡片 = 系统 QuickLook 看 docx 内容，
+        // 点叉 = 移除，两者不冲突（Button 会先吃掉点击）。
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture { state.openPreview(url) }
+        .onHover { fileHover = $0 && !state.isRunning }
+        .animation(.easeOut(duration: 0.12), value: fileHover)
+        .help("点击预览这个文件")
+    }
+}
+
+// MARK: - 文件预览（QuickLook）
+
+/// 系统 QuickLook 的 SwiftUI 包装。讲义只有 docx，交给系统渲染比自己做省事得多，
+/// 而且和访达里按空格预览看到的是同一套效果 —— 用户想确认「选对文件了吗」一眼就能看出来。
+struct QuickLookView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> NSView {
+        guard let view = QLPreviewView(frame: .zero, style: .normal) else { return NSView() }
+        view.autostarts = true
+        view.previewItem = url as NSURL
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let view = nsView as? QLPreviewView else { return }
+        view.previewItem = url as NSURL
+    }
+}
+
+/// 点文件卡弹出的大预览：压暗背景、点任意处关闭（用户 2026-10-29 第 18 轮要求）。
+/// 文章版那张卡片点开能放大看内容，讲义这边也要能看。
+struct FilePreviewPanel: View {
+    let url: URL
+    let onClose: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+                .onTapGesture { onClose() }
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.text.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.brandBlue)
+                    Text(url.lastPathComponent)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 10)
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 22)
+                            .background(Circle().fill(Color.primary.opacity(0.07)))
+                    }
+                    .buttonStyle(.plain)
+                    .handCursor()
+                    .help("关闭预览")
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                Divider()
+                QuickLookView(url: url)
+            }
+            .frame(width: 540, height: 620)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.28), radius: 26, y: 12)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

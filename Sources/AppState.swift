@@ -845,6 +845,13 @@ final class AppState: ObservableObject {
 
     func closePasteMenu() { pasteMenuSlot = nil }
 
+    /// 点文件卡打开的大预览（用户 2026-10-29 第 18 轮：「预览卡片增加预览功能」）。
+    /// 讲义只有 docx，用系统 QuickLook 直接渲染内容 —— 比列一串文件属性有用得多。
+    @Published var previewURL: URL?
+
+    func openPreview(_ url: URL) { previewURL = url }
+    func closePreview() { previewURL = nil }
+
     /// ⌘V / 右键小菜单：从**系统剪贴板**往框里放一个文件。
     func pasteFromClipboard(into slot: Slot) {
         paste(from: .general, into: slot)
