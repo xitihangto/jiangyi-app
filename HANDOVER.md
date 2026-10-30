@@ -36,6 +36,9 @@
 - v0.20：页脚 ⋯ 菜单只剩「退出 DeepSeek 账号」，Word 卡只剩紫色渐变下载按钮（见 §5.13④）
 - v0.20：新图标 v3——蓝青绿渐变底、无外圈黑边、上下沿统一 m 型、无页内页间横线（见 §5.13①）
 - v0.21：GitHub CI 打包发布 Release，curl 一行下载（见 §5.14②）
+- **图片位置还原**（2026-10-30，未发版）：模型读不到 docx 里的图，但会在原位置自己写 `[图N]`（实测位置全对）；
+  本地解压抽图（`DocxImages.swift`）+ 脚本跑完按顺序回填（`PythonRunner.backfillTemplate`）。
+  实测 3 张全中、图注保留、残留标记 0。提示词未改，规则 md 只加了一条插图格式约定。
 
 ### ⚠️ 已知不稳定点
 - 自动判定「AI 写完了」仍可能偶尔误判（四层判定，见 §5.5；v0.20 已把“稳定就当写完”收紧，见 §5.13③）
@@ -79,6 +82,54 @@ bash ~/Desktop/讲义生成-重新编译安装.sh
 ```
 `--runpython` 会打印 `exit / work / files / output / docx 字节数`，是排查「Python 跑不通」最快的入口。
 
+### 无人值守替跑（autopilot，2026-10-30 加）
+
+用户说「**替跑**」就是指这个：不选文件、不点按钮，让 App 自己跑完一轮，用于回归测试。
+源码 `Sources/Autopilot.swift`，入口在 `ContentView.onAppear` 里调 `Autopilot.start(state:)`。
+
+```bash
+# 首选：直接跑包内二进制。参数一定传得到，退出码同步返回
+"dist/讲义生成.app/Contents/MacOS/LectureGen" \
+    --autopilot /绝对路径/考卷.docx /绝对路径/答案.docx --out /绝对路径/输出目录
+```
+
+兜底方案（**唯一能「双击图标就替跑」的路子**）：
+
+```bash
+B=com.workbuddy.lecturegen
+defaults write $B autopilotExam   -string "/绝对路径/考卷.docx"
+defaults write $B autopilotAnswer -string "/绝对路径/答案.docx"
+defaults write $B autopilotOut    -string "/绝对路径/输出目录"
+killall LectureGen 2>/dev/null; open -a "讲义生成"
+
+# 跑完必须清掉，否则下次打开 App 还会自动再跑一轮
+defaults delete $B autopilotExam; defaults delete $B autopilotAnswer; defaults delete $B autopilotOut
+```
+
+**`open -a "讲义生成" --args --autopilot …` 不推荐**：`--args` 不保证能传进 `CommandLine.arguments`
+（`--logdemo` 踩过，见 §5.34；2026-10-30 给作文批改 App 加替跑时又踩了一次 ——
+同一套参数 `open --args` 起来连 `_trace.txt` 都不生成，换成跑二进制立刻就对了）。
+**自动化脚本一律直接跑二进制。**
+
+**行为**：查文件在不在 → 等 3 秒 → 填两个槽 → **等「深度思考 + 联网搜索」双绿灯**（`modesChecked`，最多 60 秒）
+→ 跑 pipeline → 复制成品和日志到输出目录 → 退出。
+
+**退出码**：`0` 成功 / `1` 生成失败 / `2` 超时（8 分钟）/ `3` 文件放不进上传框或文件不存在 / `4` 双绿灯未确认。
+
+**输出目录**里会有三样：成品 docx、`autopilot-日志.txt`（完整运行日志，含 `[回填]` 行）、
+`_trace.txt`（关键节点时间戳 —— 命令行侧看不到 NSLog，靠它判断卡在哪一步）。
+
+**三个坑**：
+
+1. `open -a` 会复用正在运行的实例，**改完代码必须 `killall LectureGen` 再启动**，否则跑的还是旧二进制。
+   2026-10-30 第一次替跑因为 `osascript quit` 没退干净，白等了 9 分钟。
+2. 双绿灯必须等。界面按钮不强制（`canGenerate` 不含 `modesChecked`，怕开关认不出来时按钮永久变灰），
+   但替跑没人看着，模式没确认就开跑，生成的讲义质量会不一致。
+3. **上传框不查文件存在性**（只按扩展名收卡片），所以文件路径写错时卡片照样进框，
+   要等 pipeline 跑到一半才报「未能打开文件」，退出码还是 1（看起来像生成失败）。
+   替跑在 `start()` 开头自己查一遍 `fileExists`，路径写错直接退出码 3 并写明是哪个文件 ——
+   这道检查只在替跑里，**不影响正常使用**。
+
 ### JS 语法校验（改过 `Scripts.swift` 后必做）
 ```bash
 python3 - Sources/Scripts.swift <<'PY'
@@ -112,6 +163,8 @@ lecture-app/
 │   ├── BrowserController.swift # WKWebView + 可挪到屏幕外的窗口 + 真实鼠标注入
 │   ├── PythonRunner.swift      # 内置 Python 执行器
 │   ├── ScriptExtractor.swift   # 从文本里提取/打分挑出 Python 代码块
+│   ├── DocxImages.swift        # 从 docx 抽图（按正文出现顺序；页眉页脚的图不抽）
+│   ├── Autopilot.swift         # 无人值守替跑，用法见 §2
 │   └── SafariBridge.swift      # AppleScript 通道（备用，见 §5.3）
 ├── Resources/                  # 内置附件（固化进 App，防止误删）
 │   ├── 讲义制作规则.md          # 11K，AI 的作业规则

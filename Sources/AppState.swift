@@ -1115,6 +1115,11 @@ final class AppState: ObservableObject {
     /// 调试「到底卡在哪一步」时可以临时改 true，改完记得改回来。
     static let autoOpenLogWhileTesting = false
 
+    /// 本轮从考卷 / 答案里抽出的图片，脚本跑完后按顺序回填进成品。
+    /// 在 `pipeline` 里（后台线程）写入，`runScript` 在主线程读，中间隔着一次 dispatch_async。
+    /// 跨文件写，所以不能 private(set)。
+    var pendingImages: [DocxImage] = []
+
     var pythonReady: Bool { PythonRunner.isAvailable }
 
     /// 抓到脚本 → 直接跑，不再问用户
@@ -1138,14 +1143,17 @@ final class AppState: ObservableObject {
         isRunning = true
         scriptOutput = ""
         docx = .building
+        let images = pendingImages          // 主线程取一份，别在后台线程读属性
         say("正在生成 Word 讲义…", detail: "大约需要几十秒，请稍等", running: true)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             var payload: RunResult?
             var failure: String?
+            var backfill: [String] = []
             do {
-                payload = try PythonRunner.run(script: cleaned)
+                payload = try PythonRunner.run(script: cleaned, assets: images)
+                backfill = self.backfillImages(in: payload, expected: images.count)
             } catch {
                 failure = error.localizedDescription
             }
@@ -1161,7 +1169,12 @@ final class AppState: ObservableObject {
                     return
                 }
                 guard let result = payload else { return }
-                self.scriptOutput = result.output.isEmpty ? "（脚本没有任何输出）" : result.output
+                var combined = result.output.isEmpty ? "（脚本没有任何输出）" : result.output
+                if !backfill.isEmpty {
+                    combined += "\n\n" + backfill.joined(separator: "\n")
+                }
+                self.scriptOutput = combined
+                for line in backfill { self.log(line) }
 
                 if result.cancelled {
                     self.docx = .idle
@@ -1205,6 +1218,22 @@ final class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    /// 脚本跑完后，把成品里的 [图片缺失] 之类标记换成 assets/ 里的真图。
+    /// 失败不打断主流程 —— 图没填上，讲义本身还是好的，日志里说明即可。
+    private func backfillImages(in result: RunResult?, expected: Int) -> [String] {
+        guard expected > 0, let result = result, result.ok,
+              let target = result.producedFiles.first(where: { $0.pathExtension.lowercased() == "docx" })
+        else { return [] }
+        let script = PythonRunner.backfillScript(docxName: target.lastPathComponent)
+        guard let aux = try? PythonRunner.runAux(script: script, in: result.workDir) else {
+            return ["[回填] 回填脚本没能启动"]
+        }
+        let lines = aux.output.split(separator: "\n")
+            .map(String.init)
+            .filter { $0.contains("[回填]") }
+        return aux.code == 0 ? lines : lines + ["[回填] 回填脚本退出码 \(aux.code)"]
     }
 
     /// 产物不再搬到 Application Support/成品目录：直接用 Python 临时目录里的原件。

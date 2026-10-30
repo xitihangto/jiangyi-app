@@ -349,6 +349,8 @@ struct ContentView: View {
             }
             // 测试模式：一启动就把日志摊开，不用等开跑（正常模式只在开跑时展开）
             if AppState.autoOpenLogWhileTesting { state.openLog() }
+            // 无人值守跑一轮（回归测试用），参数见 Autopilot 的注释
+            Autopilot.start(state: state)
             // 开发用：--uidemo / --uidemo2 只改界面状态，方便截图检查视觉
             if CommandLine.arguments.contains("--uidemo") {
                 state.applyUIDemo(step: 1)

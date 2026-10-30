@@ -51,6 +51,7 @@ extension AppState {
         progressLines = []
         lastLogAt = nil          // 新一轮从零计时，别把上一轮的间隔带过来
         docx = .idle
+        pendingImages = []       // 上一轮抽出来的图不能带到这一轮
         // 测试期：开跑就把日志摊开，跑的过程中能一直看着（正式行为是 false）
         if Self.autoOpenLogWhileTesting { openLog() }
 
@@ -129,6 +130,15 @@ extension AppState {
             UploadItem(url: answer, name: answer.lastPathComponent, mime: mimeFor(answer))
         ]
         var prompt = AppState.promptText
+
+        // 模型读不到 docx 里的图，但会在原位置写 [图片缺失]（实测位置全对）。
+        // 这里先把图按正文顺序抽出来，等脚本跑完由程序按顺序填回去。
+        pendingImages = collectImages(exam: exam, answer: answer)
+        if pendingImages.isEmpty {
+            log("考卷 / 答案里没有插图，成品不需要回填")
+        } else {
+            log("抽出 \(pendingImages.count) 张插图，成品生成后自动回填")
+        }
 
         // 0. 开新对话。内置浏览器走三档，从最省事往下退：
         //
@@ -288,6 +298,18 @@ extension AppState {
     /// 回读这一步是关键：网页插入文件名是异步的，只靠「填完就当成功」会漏。
     /// 返回 true 表示回读与提示词完全一致。
     @discardableResult
+    /// 把考卷、答案里的图按「考卷在前、答案在后」合并，重新连续编号。
+    /// 模型输出的标记顺序也是这个顺序（考卷正文 → 答案正文），所以能一一对上。
+    private func collectImages(exam: URL, answer: URL) -> [DocxImage] {
+        var merged: [DocxImage] = []
+        for source in [exam, answer] {
+            for image in DocxImages.extract(from: source) {
+                merged.append(DocxImage(index: merged.count + 1, ext: image.ext, data: image.data))
+            }
+        }
+        return merged
+    }
+
     private func fillPrompt(_ prompt: String) throws -> Bool {
         for attempt in 1...2 {
             _ = try self.js(Scripts.clearText)
