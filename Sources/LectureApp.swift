@@ -1708,9 +1708,13 @@ struct LogPanel: View {
 
     /// 复制后 1.6 秒内按钮显示「已复制」，给个明确的反馈
     @State private var copied = false
+    /// 下载后 1.6 秒内按钮显示「已保存」，同上
+    @State private var saved = false
 
     private var lines: [String] { state.progressLines }
     private var scriptOutput: String { state.scriptOutput }
+    /// 什么都没跑过：两个按钮都置灰
+    private var isEmpty: Bool { lines.isEmpty && scriptOutput.isEmpty }
 
     /// 压暗层高度 = 720 - 172。172 是底部留给 Word 卡（标题行 + 说明 + 按钮行）的高度，
     /// 少留一点就会压到「详情」按钮上。
@@ -1757,9 +1761,31 @@ struct LogPanel: View {
                 .foregroundStyle(.secondary)
             Spacer()
 
+            // 下载日志（2026-10-30）：和「下载 Word 讲义」同一套流程
+            // （弹面板选目录 → 在 Finder 里定位），只是写的是文字。
+            // 内容与「复制全部」共用 `state.logText`，两边不会漂。
+            Button(action: saveLog) {
+                HStack(spacing: 4) {
+                    Image(systemName: saved ? "checkmark" : "arrow.down.circle")
+                        .font(.system(size: 9, weight: .bold))
+                    Text(saved ? "已保存" : "下载日志")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+                .foregroundStyle(Color.black.opacity(0.72))
+                .padding(.horizontal, 9)
+                .frame(height: 22)
+                .background(Capsule().fill(Color.white))
+                .overlay(Capsule().strokeBorder(Color.black.opacity(0.14), lineWidth: 0.8))
+                .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+            }
+            .buttonStyle(.plain)
+            .handCursor()
+            .disabled(isEmpty)
+            .opacity(isEmpty ? 0.45 : 1)
+            .help("把整份日志存成 txt（含脚本输出）")
+
             // 一键拷全部（2026-10-29 对齐试卷识别版）。
-            // 每行是独立 Text，SwiftUI 的跨行拖选会被打断，只能一行一行选 ——
-            // 用户要截图两次以上才拿得全，所以给个按钮。
+            // 日志块现在合成一个 Text 了，跨行本来就能选；这个按钮留着更省事。
             Button(action: copyAll) {
                 HStack(spacing: 4) {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
@@ -1799,46 +1825,39 @@ struct LogPanel: View {
     }
 
     /// 把面板里看到的东西原样拷进剪贴板：日志行 + 分隔线 + 脚本输出。
-    /// 顺序和界面一致，贴到别处不用再拼。
+    /// 文本由 `state.logText` 统一拼，和「下载日志」写出去的内容逐字相同。
     private func copyAll() {
-        var parts = lines
-        if !scriptOutput.isEmpty {
-            if !parts.isEmpty { parts.append("") }
-            parts.append("—— 脚本输出 ——")
-            parts.append(scriptOutput)
-        }
-        guard !parts.isEmpty else { return }
+        let text = state.logText
+        guard !text.isEmpty else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
-        pb.setString(parts.joined(separator: "\n"), forType: .string)
+        pb.setString(text, forType: .string)
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copied = false }
+    }
+
+    /// 存成 txt：真正的写文件在 `AppState.saveLog()`，这里只负责按钮反馈。
+    private func saveLog() {
+        guard state.saveLog() else { return }   // 面板被取消就什么都不做
+        saved = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { saved = false }
     }
 
     private var logList: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
-                    if lines.isEmpty && scriptOutput.isEmpty {
+                    if isEmpty {
                         Text("这次还没有日志。跑一次生成就会有了。")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
-                    }
-                    ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
-                        Text(line)
+                    } else {
+                        // 整块合成**一个** Text。
+                        // 以前是 ForEach 逐行一个 Text，SwiftUI 的选择域按 Text 算，
+                        // 所以跨行拖选会被打断、只能一段一段复制。合成一个之后整块是一个选择域。
+                        Text(logBlock)
                             .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(tint(for: line))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .id(index)
-                    }
-                    if !scriptOutput.isEmpty {
-                        Divider().padding(.vertical, 6)
-                        Text("—— 脚本输出 ——")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        Text(scriptOutput)
-                            .font(.system(size: 10.5, design: .monospaced))
+                            .lineSpacing(4)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -1855,6 +1874,28 @@ struct LogPanel: View {
             }
         }
         .background(Color(nsColor: .textBackgroundColor).opacity(0.55))
+    }
+
+    /// 把日志行拼成一个带颜色的 `AttributedString`，交给一个 `Text` 去画。
+    ///
+    /// 逐行颜色靠 `foregroundColor` 保留，和以前 `tint(for:)` 的效果一致；
+    /// 行距用 `lineSpacing(4)` 补回来（原来是 VStack 的 spacing: 4）。
+    private var logBlock: AttributedString {
+        var out = AttributedString()
+        for line in lines {
+            var seg = AttributedString(line + "\n")
+            seg.foregroundColor = tint(for: line)
+            out.append(seg)
+        }
+        if !scriptOutput.isEmpty {
+            var sep = AttributedString((lines.isEmpty ? "" : "\n") + "—— 脚本输出 ——\n")
+            sep.foregroundColor = Color.secondary
+            out.append(sep)
+            var body = AttributedString(scriptOutput)
+            body.foregroundColor = Color.primary.opacity(0.85)
+            out.append(body)
+        }
+        return out
     }
 
     /// 出错的标红，警告标黄，其余保持正文色 —— 扫一眼就知道哪行有问题

@@ -1243,6 +1243,51 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 日志面板里看到的那一份文字：日志行 + 空行 + 「—— 脚本输出 ——」+ 脚本输出。
+    ///
+    /// **复制和下载共用这一个**。以前只有「复制全部」在 `LogPanel` 里自己拼，
+    /// 加了「下载日志」之后如果各拼一遍，以后改一处漏一处，两边内容就会漂。
+    var logText: String {
+        var parts = progressLines
+        if !scriptOutput.isEmpty {
+            if !parts.isEmpty { parts.append("") }
+            parts.append("—— 脚本输出 ——")
+            parts.append(scriptOutput)
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    /// 点「下载日志」：和「下载 Word 讲义」同一套流程（弹面板 → 落到同一个起始目录 →
+    /// 写完在 Finder 里定位），只是写的不是复制来的文件，而是上面那份文字。
+    ///
+    /// 返回是否真的存了（面板被取消返回 false），按钮据此决定要不要闪「已保存」。
+    @discardableResult
+    func saveLog() -> Bool {
+        let text = logText
+        guard !text.isEmpty else { return false }
+        let panel = NSSavePanel()
+        panel.title = "保存运行日志"
+        panel.message = "选择日志存到哪里"
+        let df = DateFormatter()
+        df.dateFormat = "yyyyMMdd-HHmm"
+        panel.nameFieldStringValue = "运行日志-\(df.string(from: Date())).txt"
+        if let t = UTType(filenameExtension: "txt") { panel.allowedContentTypes = [t] }
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        if let dir = startDirectory(for: .exam) { panel.directoryURL = dir }
+
+        guard panel.runModal() == .OK, let dest = panel.url else { return false }
+        do {
+            try text.write(to: dest, atomically: true, encoding: .utf8)
+            say("日志已保存 ✓", detail: dest.path, running: false, tone: .ok)
+            revealInFinder(dest)
+            return true
+        } catch {
+            say("日志保存失败", detail: error.localizedDescription, running: false, tone: .error)
+            return false
+        }
+    }
+
     /// 在 Finder 里「打开所在文件夹并选中这个文件」。
     ///
     /// 不用 `activateFileViewerSelecting` —— 那个 API 会先激活 Finder 再开窗口，

@@ -1370,6 +1370,24 @@ rFonts.set(qn('w:hint'), 'eastAsia')      # ← 少了这一行，①②③ 和�
 
 **版本**：未升版，**未推 GitHub**。
 
+### 5.33 日志面板：加「下载日志」+ 修「只能一段一段复制」（2026-10-30）
+
+三份 App（讲义 / 作文 / 试卷）同步改，用户一次提的两条。
+
+**① 跨行选择**：日志列表原来是 `ForEach` 逐行一个 `Text`，每行各带 `.textSelection(.enabled)`。
+**SwiftUI 的选择域是按 `Text` 算的**，拖动只能在一行内、跨行必断。改成整块合成一个
+`Text(AttributedString)`：逐行颜色用 `foregroundColor` 保留（还是 `tint(for:)` 那套），
+行距用 `.lineSpacing(4)` 补（原来靠 `VStack` 的 spacing）。整块因此是一个选择域。
+> 没走 `NSTextView`：要 130 行左右，还得处理滚动同步和明暗主题，为「能跨行选」不值。
+
+**② 下载日志**：和「下载 Word 讲义」同一套流程（`NSSavePanel` → 同一个起始目录 →
+`revealInFinder` → `say()` 报一句），只是写的是文字。文件名 `运行日志-yyyyMMdd-HHmm.txt`。
+
+**日志文本只有一个出处**：原来「复制全部」在 `LogPanel` 里自己拼，加了下载再拼一遍必然漂。
+现在提到 `AppState.logText`，两边都读它。按钮在「复制全部」左边，存盘成功 1.6 秒内显示「已保存」。
+
+**版本**：未升版，**未推 GitHub**。
+
 ---
 
 ## 6. DeepSeek 网页真实结构（实测，别猜）
