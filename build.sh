@@ -23,6 +23,11 @@ swiftc -O $SANDBOX_FLAG -o "$APP/Contents/MacOS/$BIN" Sources/*.swift
 
 echo "▸ 拷入资源（内置附件 + 图标 + 本地化）"
 cp -R Resources/. "$APP/Contents/Resources/"
+# 清掉编辑器和 Finder 留下的垃圾：
+#   ~$xxx.docx 是 Word/WPS 打开文件时生成的锁文件，不是内容，打进包里纯属污染；
+#   .DS_Store 是 Finder 的目录缓存。
+find "$APP/Contents/Resources" -maxdepth 1 -name '~$*' -delete
+find "$APP/Contents/Resources" -maxdepth 1 -name '.DS_Store' -delete
 
 echo "▸ 拷入 Python 运行时（仅 docx 依赖）"
 if [ -d Runtime/python ]; then
