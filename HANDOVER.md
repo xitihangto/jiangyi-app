@@ -1542,16 +1542,9 @@ if AppState.autoOpenLogWhileTesting { state.openLog() }
 
 ### ⏳ 待推送（2026-10-30 起攒的，推完即删）
 
-- **推之前先核对提交者身份**（2026-10-30 发现的隐患）。这台机器**全局没配** `user.name` / `user.email`，
-  只有 `lecture-app` / `article-correct-app` 各自单独配了 `xitihangto <xitihangto@gmail.com>`。
-  哪天新建仓库忘了配，commit 作者会被自动猜成 `linquin@linquins-Mac-mini.local` —— 这个已经踩过一次
-  （`ocr-exam-app` 首次提交，好在没推，`--amend --reset-author` 救回来了）。**一旦推上去就改不回来了。**
-  推送前对每个仓库跑一遍 `git log -1 --format='%an <%ae>'` 核对；顺手把全局也配上，一劳永逸：
-  ```bash
-  git config --global user.name  "xitihangto"
-  git config --global user.email "xitihangto@gmail.com"
-  ```
-- 待推内容：`92e063f` 图片位置还原 + 无人值守替跑。**版本号仍是 0.35，推之前按发版五步升到位。**
+- 待推内容：`92e063f` 图片位置还原 + 无人值守替跑；`b66ea90` 本文件补待推送一节。
+  **版本号仍是 0.35，推之前按发版五步升到位。**
+  （本仓库的提交者身份一直是配好的 `xitihangto <xitihangto@gmail.com>`，不涉及这个问题。）
 
 
 ### ✅ 已完成：内置浏览器彻底隐形（v0.14）
