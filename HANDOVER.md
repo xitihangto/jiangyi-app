@@ -1540,6 +1540,20 @@ if AppState.autoOpenLogWhileTesting { state.openLog() }
 >
 > 唯一的例外是「⏳ 待推送」一节：用户让先改先编译、攒着等命令一起推时，临时记在那里，**推完即删**。
 
+### ⏳ 待推送（2026-10-30 起攒的，推完即删）
+
+- **推之前先核对提交者身份**（2026-10-30 发现的隐患）。这台机器**全局没配** `user.name` / `user.email`，
+  只有 `lecture-app` / `article-correct-app` 各自单独配了 `xitihangto <xitihangto@gmail.com>`。
+  哪天新建仓库忘了配，commit 作者会被自动猜成 `linquin@linquins-Mac-mini.local` —— 这个已经踩过一次
+  （`ocr-exam-app` 首次提交，好在没推，`--amend --reset-author` 救回来了）。**一旦推上去就改不回来了。**
+  推送前对每个仓库跑一遍 `git log -1 --format='%an <%ae>'` 核对；顺手把全局也配上，一劳永逸：
+  ```bash
+  git config --global user.name  "xitihangto"
+  git config --global user.email "xitihangto@gmail.com"
+  ```
+- 待推内容：`92e063f` 图片位置还原 + 无人值守替跑。**版本号仍是 0.35，推之前按发版五步升到位。**
+
+
 ### ✅ 已完成：内置浏览器彻底隐形（v0.14）
 
 > 用户要求：「内置浏览器除了登录用，其他时候能不能完全不显示，不弹出？」
