@@ -51,3 +51,34 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             LectureGen-${{ github.ref_name }}.zip
+
+      # ---- 同步到 R2：让 gh-proxy 从 CF 内部直出，不再跨境回源 GitHub ----
+      # R2 的 key 规则必须和 worker 里的匹配规则一致：<owner>/<repo>/<tag>/<asset>
+      # 凭据是仓库 Secrets 里的 R2 API Token（Object Read & Write，只限 app-releases）。
+      # 这一步失败就让整个 job 红掉 —— 否则会静悄悄退化成「跨境回源，慢但能用」，
+      # 这种失败最难发现，所以宁可报错。
+      - name: Mirror to R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: https://32226aa9b7c86d4183d6610f9f79593c.r2.cloudflarestorage.com
+          ASSET: LectureGen-${{ github.ref_name }}.zip
+        run: |
+          set -euo pipefail
+          KEY="${{ github.repository }}/${{ github.ref_name }}/$ASSET"
+          URL="$R2_ENDPOINT/app-releases/$KEY"
+          echo "▸ 上传 $ASSET → $KEY"
+          curl -sS --fail-with-body \
+            --aws-sigv4 "aws:amz:auto:s3" \
+            --user "$R2_ACCESS_KEY_ID:$R2_SECRET_ACCESS_KEY" \
+            -X PUT -T "$ASSET" \
+            -H "Content-Type: application/zip" \
+            -H "Cache-Control: public, max-age=31536000, immutable" \
+            "$URL"
+          LOCAL="$(stat -f%z "$ASSET")"
+          REMOTE="$(curl -sSI --aws-sigv4 "aws:amz:auto:s3" \
+            --user "$R2_ACCESS_KEY_ID:$R2_SECRET_ACCESS_KEY" "$URL" \
+            | tr -d '\r' | awk 'tolower($1)=="content-length:"{print $2}')"
+          echo "  local=$LOCAL remote=$REMOTE"
+          test "$LOCAL" = "$REMOTE" || { echo "R2 上的大小和本地不一致，已停止"; exit 1; }
+          echo "✓ 已同步到 R2"
