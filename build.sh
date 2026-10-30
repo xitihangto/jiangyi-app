@@ -49,7 +49,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleIdentifier</key><string>com.workbuddy.lecturegen</string>
 	<key>CFBundleExecutable</key><string>LectureGen</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>0.36</string>
+	<key>CFBundleShortVersionString</key><string>0.37</string>
 	<!-- 故意不写 CFBundleVersion：系统「关于」面板会把它显示成「版本 0.35 (34)」。
 	     这个 App 不用 Sparkle、不进 App Store，构建号没有任何用途，
 	     更新台和 CI 也都只读 CFBundleShortVersionString。 -->
