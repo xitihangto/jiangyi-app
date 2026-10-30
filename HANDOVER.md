@@ -527,6 +527,16 @@ v0.15 实测全部符合预期。**改登录相关代码后跑这个，比肉眼
   curl -L --fail -o ~/Downloads/LectureGen-v0.21.zip https://github.com/xitihangto/jiangyi-app/releases/download/v0.21/LectureGen-v0.21.zip
   ```
   地址最后一段必须跟 CI 上传的文件名一字不差；标签和产物名都用 `github.ref_name` 拼，换标签就换地址，不用改 workflow。
+
+**③ v0.34 起：发版自动同步到 R2（2026-10-30 加）。**
+- `release.yml` 末尾多一步 `Mirror to R2`：在 `Publish Release` 之后，把同一个 zip 再传一份到
+  Cloudflare R2（bucket `app-releases`，key = `owner/repo/tag/asset`）。
+- 由 `gh-proxy.kexuejia.qzz.io` 从 CF 内部直出，不再跨境回源 GitHub；
+  **下载地址形式不变**，只是前面套了代理域名。R2 里没有的版本会自动回源，不会坏，只是慢。
+- 凭据：仓库 Secrets `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`（R2 API Token，只限 `app-releases`）。
+  这一步失败会让整个 job 红掉——看到红叉就是该版本没进 R2。
+- 手动补传（`~/gh-proxy-r2/upload.sh`）与踩坑见 `~/gh-proxy-r2/README.md`。
+  最容易错的一点：**R2 key 不含 `releases/download` 那段**，只有四段；写错不报错，只会静默回源变慢。
 - 失败时 Release 不会生成：先看仓库 Actions 那一栏的日志，修好再重新打标签/重跑；同一标签重复建 Release 前要先删掉已有的同名 Release，否则发布那步会冲突。
 - 注意：CI 产物是临时签名的 App（build.sh 里 `codesign --sign -`），靠 curl 不打隔离属性绕过 Gatekeeper，不是 Developer ID 签名 + 公证；如果苹果以后收紧这条路，要重新测。
 
