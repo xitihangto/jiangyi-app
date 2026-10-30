@@ -537,6 +537,12 @@ v0.15 实测全部符合预期。**改登录相关代码后跑这个，比肉眼
   这一步失败会让整个 job 红掉——看到红叉就是该版本没进 R2。
 - 手动补传（`~/gh-proxy-r2/upload.sh`）与踩坑见 `~/gh-proxy-r2/README.md`。
   最容易错的一点：**R2 key 不含 `releases/download` 那段**，只有四段；写错不报错，只会静默回源变慢。
+
+**④ 升版必须连本地一起升到位（2026-10-30 用户定）。**
+- 改完 `build.sh` 的 `CFBundleShortVersionString` 后，先 `./build.sh --install` 重编替换、
+  quit 并重开 App，**再**打 tag 推。顺序反了就会出现「线上 0.34、本机还是 0.33」。
+- `--install` 里那句 `pkill` 在**沙箱内会被静默拦掉**（`2>/dev/null || true` 吃了报错），
+  装完必须确认旧进程真的退出了，否则「磁盘上是新版、内存里跑的是旧版」，最难发现。
 - 失败时 Release 不会生成：先看仓库 Actions 那一栏的日志，修好再重新打标签/重跑；同一标签重复建 Release 前要先删掉已有的同名 Release，否则发布那步会冲突。
 - 注意：CI 产物是临时签名的 App（build.sh 里 `codesign --sign -`），靠 curl 不打隔离属性绕过 Gatekeeper，不是 Developer ID 签名 + 公证；如果苹果以后收紧这条路，要重新测。
 
