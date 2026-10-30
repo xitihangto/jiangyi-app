@@ -306,10 +306,10 @@ struct ContentView: View {
                     titleCard
                     UploadCard(slot: .exam,
                                title: "上传考卷",
-                               subtitle: "支持 .doc / .docx，含题目与原文")
+                               subtitle: "支持 .doc / .docx / .pdf，含题目与原文")
                     UploadCard(slot: .answer,
                                title: "上传答案",
-                               subtitle: "支持 .doc / .docx，含参考答案 / 解析 / 范文")
+                               subtitle: "支持 .doc / .docx / .pdf，含参考答案 / 解析 / 范文")
                     loginLine
                     generateButton
                     ProgressCard()

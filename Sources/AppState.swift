@@ -213,6 +213,7 @@ final class AppState: ObservableObject {
         var types: [UTType] = []
         if let t = UTType(filenameExtension: "docx") { types.append(t) }
         if let t = UTType(filenameExtension: "doc") { types.append(t) }
+        if let t = UTType(filenameExtension: "pdf") { types.append(t) }
         return types.isEmpty ? [.data] : types
     }()
 
@@ -760,7 +761,10 @@ final class AppState: ObservableObject {
 
     /// 只收这几种。`NSOpenPanel` 那边有 `allowedContentTypes` 挡着，
     /// 但拖放绕得过，所以 `accept` 里还要自己挡一次。
-    static let allowedExtensions: Set<String> = ["doc", "docx"]
+    ///
+    /// pdf 是 2026-10-30 加的：附件本来就是整份丢给 DeepSeek 网页版解析，
+    /// 它自己认 pdf，App 这边只要把 MIME 报对（见 Pipeline.mimeFor）就够了。
+    static let allowedExtensions: Set<String> = ["doc", "docx", "pdf"]
 
     /// 内容指纹：字节数 + 头 128KB + 尾 128KB 的 SHA-256。
     ///
@@ -878,7 +882,7 @@ final class AppState: ObservableObject {
 
     /// 真正干活的那一层。剪贴板作为参数传进来，自检就能用一块私有剪贴板。
     ///
-    /// 讲义只收 Word，所以只处理「剪贴板里是文件」这一种；没有文件就直说，
+    /// 讲义只收 Word / PDF，所以只处理「剪贴板里是文件」这一种；没有文件就直说，
     /// 不去猜「是不是想粘一张图」—— 讲义的两份输入都是 docx，粘图没有意义。
     ///
     /// ⚠️ 剪贴板里一旦有文件 URL，就走完这个分支直接 return，
@@ -889,7 +893,7 @@ final class AppState: ObservableObject {
         let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
         let urls = (pb.readObjects(forClasses: [NSURL.self], options: options) as? [URL]) ?? []
         guard !urls.isEmpty else {
-            showToast("剪贴板里没有文件，讲义只收 .doc / .docx", on: slot)
+            showToast("剪贴板里没有文件，讲义只收 .doc / .docx / .pdf", on: slot)
             return
         }
         // 复用拖放那条路：只取第一个，多出来的给一句提示；白名单、跨框查重都在 accept 里
@@ -961,7 +965,7 @@ final class AppState: ObservableObject {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = AppState.docTypes
-        panel.message = "只接受 doc 或 docx 文件"
+        panel.message = "只接受 doc / docx / pdf 文件"
         panel.prompt = "选择"
         panel.title = slot == .exam ? "选择考卷" : "选择答案"
         panel.isExtensionHidden = false
@@ -989,9 +993,9 @@ final class AppState: ObservableObject {
     /// `NSOpenPanel` 有 `allowedContentTypes`，拖放可绕不过去。
     @discardableResult
     func accept(_ url: URL, for slot: Slot) -> Bool {
-        // ① 类型：只收 Word
+        // ① 类型：只收 Word / PDF
         guard Self.allowedExtensions.contains(url.pathExtension.lowercased()) else {
-            showToast("只收 Word 文档（.doc / .docx）", on: slot)
+            showToast("只收 .doc / .docx / .pdf 文档", on: slot)
             return false
         }
         // ② 跨框查重（用户 2026-10-29 第 11 轮）：

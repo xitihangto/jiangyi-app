@@ -36,6 +36,7 @@ extension AppState {
         switch url.pathExtension.lowercased() {
         case "docx": return docxMime
         case "doc": return "application/msword"
+        case "pdf": return "application/pdf"
         case "md": return "text/markdown"
         default: return "application/octet-stream"
         }
