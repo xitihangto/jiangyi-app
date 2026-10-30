@@ -1388,6 +1388,38 @@ rFonts.set(qn('w:hint'), 'eastAsia')      # ← 少了这一行，①②③ 和�
 
 **版本**：未升版，**未推 GitHub**。
 
+### 5.34 测试开关的两个坑（2026-10-30，三份 App 同步修）
+
+改日志面板时想「一打开就能看到详情」，结果发现两处代码本身是错的，跟测试模式开不开无关：
+
+**① `--logdemo` 不一定能传进来。**
+`open -a "/Applications/讲义生成.app" --args --logdemo` 看着天经地义，但**实测参数没到
+`CommandLine.arguments`** —— LaunchServices 启动的 app 拿不拿得到要看它心情。所以 `--logdemo`
+这条开发路径一直是个薛定谔的功能。修法：再给一个不依赖启动参数的开关兜底。
+
+```swift
+} else if CommandLine.arguments.contains("--logdemo")
+            || UserDefaults.standard.bool(forKey: "demoLog") {
+```
+
+```bash
+defaults write com.workbuddy.lecturegen demoLog -bool YES   # 打开
+defaults delete com.workbuddy.lecturegen demoLog           # 关掉
+```
+
+**② `autoOpenLogWhileTesting` 只管「开跑时」，管不到「启动时」。**
+它唯一的用点在 `Pipeline.swift` 里 `if Self.autoOpenLogWhileTesting { openLog() }`，
+也就是**点开始之后**才展开。想「一打开就看到面板」，得在 `ContentView.onAppear` 里也加一句：
+
+```swift
+if AppState.autoOpenLogWhileTesting { state.openLog() }
+```
+
+> 本工程这个常量**保持 `false`**（用户 2026-10-30 明确「不用打开测试模式，代码本身正确就行」）。
+> 加了这句之后默认行为不变，只是以后真要测的时候不用再改代码。
+
+**版本**：未升版，**未推 GitHub**。
+
 ---
 
 ## 6. DeepSeek 网页真实结构（实测，别猜）

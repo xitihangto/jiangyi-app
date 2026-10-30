@@ -347,6 +347,8 @@ struct ContentView: View {
                     window.delegate = ExitConfirmWindowDelegate.shared
                 }
             }
+            // 测试模式：一启动就把日志摊开，不用等开跑（正常模式只在开跑时展开）
+            if AppState.autoOpenLogWhileTesting { state.openLog() }
             // 开发用：--uidemo / --uidemo2 只改界面状态，方便截图检查视觉
             if CommandLine.arguments.contains("--uidemo") {
                 state.applyUIDemo(step: 1)
@@ -364,8 +366,15 @@ struct ContentView: View {
                 state.runLoginSelfTest()
             } else if CommandLine.arguments.contains("--modeprobe") {
                 state.runModeProbe()
-            } else if CommandLine.arguments.contains("--logdemo") {
+            } else if CommandLine.arguments.contains("--logdemo")
+                        || UserDefaults.standard.bool(forKey: "demoLog") {
                 // 演示「跑完一轮 + 日志面板打开」，只为截图看版式
+                //
+                // UserDefaults 兜底是 2026-10-30 加的：`open -a … --args --logdemo`
+                // 实测不一定能传进 `CommandLine.arguments`（LaunchServices 启动的 app
+                // 拿不拿得到要看它心情），所以留一个不依赖启动参数的开关：
+                //   defaults write com.workbuddy.lecturegen demoLog -bool YES
+                //   defaults delete com.workbuddy.lecturegen demoLog
                 state.applyLogDemo(openPanel: true)
             } else if CommandLine.arguments.contains("--logdemo-closed") {
                 // 同上，但面板关着，用来看 Word 卡自己的样子
