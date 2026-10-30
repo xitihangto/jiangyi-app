@@ -21,12 +21,15 @@ jobs:
           R2_ENDPOINT: https://32226aa9b7c86d4183d6610f9f79593c.r2.cloudflarestorage.com
         run: |
           set -euo pipefail
-          KEY="${{ github.repository }}/releases/download/_selftest/probe.txt"
-          URL="$R2_ENDPOINT/app-releases/$KEY"
+          # 注意：R2 的 key 不含 releases/download 那一段——worker 里它只是 URL 路径，
+          # 真正拼 key 的只有 owner/repo/tag/asset 四段。写错了不会报错，只会「查不到」。
+          S3KEY="${{ github.repository }}/_selftest/probe.txt"
+          URL="$R2_ENDPOINT/app-releases/$S3KEY"
+          PROXY="https://gh-proxy.kexuejia.qzz.io/https://github.com/${{ github.repository }}/releases/download/_selftest/probe.txt"
           printf 'r2 selftest %s\n' "$(date -u +%FT%TZ)" > probe.txt
 
           echo "▸ curl：$(curl --version | head -1)"
-          echo "▸ 上传探针 → $KEY"
+          echo "▸ 上传探针 → $S3KEY"
           curl -sS --fail-with-body \
             --aws-sigv4 "aws:amz:auto:s3" \
             --user "$R2_ACCESS_KEY_ID:$R2_SECRET_ACCESS_KEY" \
@@ -40,7 +43,7 @@ jobs:
             --user "$R2_ACCESS_KEY_ID:$R2_SECRET_ACCESS_KEY" "$URL"
 
           echo "▸ 经 gh-proxy 读，必须命中 R2"
-          SRC="$(curl -sSI "https://gh-proxy.kexuejia.qzz.io/https://github.com/$KEY" \
+          SRC="$(curl -sSI "$PROXY" \
             | tr -d '\r' | awk 'tolower($1)=="x-source:"{print $2}')"
           echo "  x-source=${SRC:-<空>}"
           test "$SRC" = "r2" || { echo "✗ 经代理没命中 R2"; exit 1; }
