@@ -1328,6 +1328,48 @@ func log(_ line: String) {
 
 **版本**：未升版，**未推 GitHub**。
 
+### 5.32 圈号 ①②③ 与全角标点必须归中文（2026-10-30）
+
+**起因**：作文批改版报「批改说明里圈起来的阿拉伯数字显示成 Times New Roman」，
+用户要求回来检查讲义版有没有同样问题。**查了，有，而且是同一套根因。**
+
+**证据**：`Resources/标准模式讲义.docx` 解包后 `word/document.xml` 里
+`<w:rFonts` 共 518 处，**带 `w:hint` 的 0 处**；而文档里圈号 ①②③④ 出现 26 次、
+全角/中文标点 798 次。也就是说样张本身就没写 hint，规则 md 又只说了
+「中文字体宋体 / 英文字体 Times New Roman（ascii/hAnsi/cs 均设，eastAsia 单设）」——
+**独独漏了 `w:hint`**，AI 照着做出来的讲义，圈号照样掉进 Times New Roman。
+
+**根因**：`w:rFonts` 有四个槽 —— `w:ascii`（基本拉丁）、`w:hAnsi`（拉丁扩展）、
+`w:eastAsia`（东亚）、`w:hint`（**歧义宽度字符按哪个槽取字体**）。
+圈号 ①②③、全角标点（，。：；！？（）「」《》、——……）、全角空格都是「东亚歧义宽度」字符，
+`w:hint` 不是 `eastAsia` 时 Word 拿 `w:ascii` 的字体 —— 也就是 Times New Roman。
+python-docx 的 `run.font.name` **只写 `w:ascii` / `w:hAnsi`，根本不碰 `w:eastAsia` 和 `w:hint`**，
+所以「中文宋体 + 西文 Times New Roman」这套写法对圈号天然无效。
+
+**修法：只改规则 md，Swift 一行不动**（版式归脚本，代码里没有字体逻辑）。
+`Resources/讲义制作规则.md` 改两处：
+
+1. §1 全局排版表「中文字体」一行补一句：圈号 ①②③ 和全角标点也算中文，靠 `w:hint="eastAsia"` 落宋体。
+2. 新增小节 **「字体设置：`w:rFonts` 的四个槽（圈号最容易错）」**，给可直接抄的 `set_font()`：
+
+```python
+rFonts.set(qn('w:eastAsia'), cn)          # 汉字、假名
+rFonts.set(qn('w:hint'), 'eastAsia')      # ← 少了这一行，①②③ 和全角标点就变西文
+```
+
+设了 hint 之后，同一个 run 里的纯英文单词照样走 `w:ascii`（Times New Roman），
+只有歧义字符改用宋体 —— 正是想要的效果。最大标题用黑体时把 `cn` 传 `'SimHei'`。
+
+**验收**：`word/document.xml` 里每个 `<w:rFonts` 都要同时带 `w:eastAsia` 和 `w:hint="eastAsia"`。
+
+> 样张 `标准模式讲义.docx` **没动**。它只是版式参照，AI 是从零用 python-docx 生成新文档的，
+> 真正的杠杆是规则 md。改样张的 XML 反而有把用户那份参考稿改花的风险。
+
+**顺带**：`build.sh` 两处 `SetFile -a B` 删除，`codesign --verify --strict` 由报 `detritus`
+变成 exit 0（同作文批改版，原因见该工程 §6.16.③：`.app` 后缀本身足够，设了 bundle bit 反而让校验不干净）。
+
+**版本**：未升版，**未推 GitHub**。
+
 ---
 
 ## 6. DeepSeek 网页真实结构（实测，别猜）
